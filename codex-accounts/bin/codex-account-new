@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_dir="$HOME/.codex-accounts"
+accounts_dir="$base_dir/accounts"
+setup_bin="$base_dir/bin/codex-account-setup"
+
+mkdir -p "$accounts_dir"
+
+pending_dir="$accounts_dir/.pending-$(date +%s)"
+session_name="setup-$(date +%H%M%S)"
+
+if tmux has-session -t "$session_name" 2>/dev/null; then
+  session_name="${session_name}-$$"
+fi
+
+tmux new-session -s "$session_name" -n login "$setup_bin '$pending_dir'"

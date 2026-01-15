@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_dir="$HOME/.codex-accounts"
+accounts_dir="$base_dir/accounts"
+run_bin="$base_dir/bin/codex-run"
+new_bin="$base_dir/bin/codex-account-new"
+
+mkdir -p "$accounts_dir"
+
+found=0
+first_session=""
+
+for dir in "$accounts_dir"/*; do
+  [ -d "$dir" ] || continue
+  found=1
+  name="$(basename "$dir")"
+  [ -n "$first_session" ] || first_session="$name"
+  if ! tmux has-session -t "$name" 2>/dev/null; then
+    tmux new-session -d -s "$name" -n codex "$run_bin '$dir'"
+  fi
+  done
+
+if [ "$found" -eq 0 ]; then
+  printf 'No accounts found. Starting setup...\n'
+  exec "$new_bin"
+fi
+
+if [ -n "${TMUX-}" ]; then
+  tmux switch-client -t "$first_session"
+else
+  tmux attach -t "$first_session"
+fi

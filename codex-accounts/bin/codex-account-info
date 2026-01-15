@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+home="${1:-$HOME/.codex}"
+auth_json="$home/auth.json"
+
+python3 - "$auth_json" <<'PY'
+import base64
+import json
+import re
+import sys
+
+path = sys.argv[1]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        auth = json.load(f)
+except Exception:
+    print("\t\t")
+    sys.exit(0)
+
+tokens = auth.get("tokens", {})
+account_id = tokens.get("account_id", "")
+
+token = tokens.get("id_token") or tokens.get("access_token") or ""
+email = ""
+
+if token.count(".") >= 2:
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception:
+        payload = {}
+    email = payload.get("email", "")
+    if not email:
+        profile = payload.get("https://api.openai.com/profile", {})
+        if isinstance(profile, dict):
+            email = profile.get("email", "")
+
+name = ""
+if email:
+    name = email.split("@", 1)[0]
+
+if not name:
+    name = "acct"
+
+name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")
+if not name:
+    if account_id:
+        name = f"acct-{account_id[:8]}"
+    else:
+        name = "acct-unknown"
+
+print(f"{name}\t{email}\t{account_id}")
+PY

@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pending_dir="$1"
+base_dir="$HOME/.codex-accounts"
+accounts_dir="$base_dir/accounts"
+info_bin="$base_dir/bin/codex-account-info"
+
+mkdir -p "$pending_dir"
+export CODEX_HOME="$pending_dir"
+
+printf 'Logging in for this account...\n'
+codex login
+
+IFS=$'\t' read -r name email account_id < <("$info_bin" "$CODEX_HOME")
+
+# Prevent duplicate accounts by account_id when possible.
+if [ -n "$account_id" ]; then
+  for meta in "$accounts_dir"/*/account.json; do
+    [ -f "$meta" ] || continue
+    existing_id="$(python3 - <<PY
+import json
+import sys
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    print(data.get('account_id', ''))
+except Exception:
+    print('')
+PY
+"$meta")"
+    if [ "$existing_id" = "$account_id" ]; then
+      existing_dir="$(dirname "$meta")"
+      existing_name="$(basename "$existing_dir")"
+      printf 'Account already exists as session: %s\n' "$existing_name"
+      rm -rf "$pending_dir"
+      if [ -n "${TMUX-}" ]; then
+        tmux switch-client -t "$existing_name" 2>/dev/null || true
+        tmux kill-session -t "$(tmux display-message -p '#S')" 2>/dev/null || true
+      fi
+      exit 0
+    fi
+  done
+fi
+
+final_name="$name"
+final_dir="$accounts_dir/$final_name"
+
+if [ -e "$final_dir" ]; then
+  i=2
+  while [ -e "$accounts_dir/${final_name}-$i" ]; do
+    i=$((i+1))
+  done
+  final_name="${final_name}-$i"
+  final_dir="$accounts_dir/$final_name"
+fi
+
+mv "$pending_dir" "$final_dir"
+export CODEX_HOME="$final_dir"
+
+if [ -n "${TMUX-}" ]; then
+  tmux rename-session "$final_name" 2>/dev/null || true
+fi
+
+if [ -n "$email" ] || [ -n "$account_id" ]; then
+  cat > "$CODEX_HOME/account.json" <<META
+{"email":"$email","account_id":"$account_id"}
+META
+fi
+
+exec "$base_dir/bin/codex-run" "$CODEX_HOME"

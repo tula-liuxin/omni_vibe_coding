@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+account_dir="$1"
+base_dir="$HOME/.codex-accounts"
+accounts_dir="$base_dir/accounts"
+info_bin="$base_dir/bin/codex-account-info"
+
+export CODEX_HOME="$account_dir"
+
+# If the account identity changed, update session + directory name.
+if [ -f "$CODEX_HOME/auth.json" ]; then
+  IFS=$'\t' read -r desired_name email account_id < <("$info_bin" "$CODEX_HOME")
+  current_name="$(basename "$CODEX_HOME")"
+
+  if [ -n "$desired_name" ] && [ "$current_name" != "$desired_name" ]; then
+    new_dir="$accounts_dir/$desired_name"
+    if [ ! -e "$new_dir" ]; then
+      mv "$CODEX_HOME" "$new_dir"
+      export CODEX_HOME="$new_dir"
+      if [ -n "${TMUX-}" ]; then
+        tmux rename-session "$desired_name" 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  if [ -n "$email" ] || [ -n "$account_id" ]; then
+    cat > "$CODEX_HOME/account.json" <<META
+{"email":"$email","account_id":"$account_id"}
+META
+  fi
+fi
+
+exec codex
