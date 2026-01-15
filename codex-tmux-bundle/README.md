@@ -50,6 +50,24 @@ codex-account-new
 tmux-codex
 ```
 
+## 同账号多窗口
+- 每个 tmux session 绑定一个独立的 Codex 账号
+- 同一个账号需要多个窗口/分屏时，在该 session 内操作：
+  - 新窗口：`Ctrl-b` 然后 `c`
+  - 水平分屏：`Ctrl-b` 然后 `"`
+  - 垂直分屏：`Ctrl-b` 然后 `%`
+  - 切换窗口：`Ctrl-b` 然后数字键（0/1/2...）
+
+## 恢复与重启
+- 只回到某个账号 session：
+  ```bash
+  tmux attach -t <session名>
+  ```
+  例：`tmux attach -t alice`
+- WSL 重启后：
+  - 运行 `tmux-codex` 一键重建/恢复所有账号 session
+  - 如需恢复窗口布局，进入 tmux 后用 `Ctrl-b` + `r`（tmux-resurrect）
+
 ## 行为说明
 - 通过 `account_id` 防止重复账号
 - 如登录账号变化，会自动更新 session 和目录名
