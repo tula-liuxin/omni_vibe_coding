@@ -14,4 +14,12 @@ if tmux has-session -t "$session_name" 2>/dev/null; then
   session_name="${session_name}-$$"
 fi
 
-tmux new-session -s "$session_name" -n login "$setup_bin '$pending_dir'"
+tmux new-session -d -s "$session_name" -n login "$setup_bin '$pending_dir'"
+
+if [ -n "${TMUX-}" ]; then
+  tmux switch-client -t "$session_name"
+elif [ -t 0 ]; then
+  tmux attach -t "$session_name"
+else
+  printf 'Session created. Run: tmux attach -t %s\n' "$session_name"
+fi

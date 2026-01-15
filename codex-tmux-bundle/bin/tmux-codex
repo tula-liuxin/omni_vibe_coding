@@ -5,8 +5,68 @@ base_dir="$HOME/.codex-accounts"
 accounts_dir="$base_dir/accounts"
 run_bin="$base_dir/bin/codex-run"
 new_bin="$base_dir/bin/codex-account-new"
+info_bin="$base_dir/bin/codex-account-info"
 
 mkdir -p "$accounts_dir"
+
+promote_pending() {
+  declare -A seen_ids=()
+  shopt -s nullglob
+  for dir in "$accounts_dir"/.pending-*; do
+    [ -d "$dir" ] || continue
+    [ -f "$dir/auth.json" ] || continue
+
+    IFS=$'\t' read -r name email account_id < <("$info_bin" "$dir")
+
+    if [ -n "$account_id" ]; then
+      if [ -n "${seen_ids[$account_id]:-}" ]; then
+        rm -rf "$dir"
+        continue
+      fi
+      seen_ids[$account_id]=1
+      for meta in "$accounts_dir"/*/account.json; do
+        [ -f "$meta" ] || continue
+        existing_id="$(python3 - "$meta" <<'PY'
+import json
+import sys
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    print(data.get('account_id', ''))
+except Exception:
+    print('')
+PY
+)"
+        if [ "$existing_id" = "$account_id" ]; then
+          rm -rf "$dir"
+          continue 2
+        fi
+      done
+    fi
+
+    final_name="$name"
+    final_dir="$accounts_dir/$final_name"
+    if [ -e "$final_dir" ]; then
+      i=2
+      while [ -e "$accounts_dir/${final_name}-$i" ]; do
+        i=$((i+1))
+      done
+      final_name="${final_name}-$i"
+      final_dir="$accounts_dir/$final_name"
+    fi
+
+    mv "$dir" "$final_dir"
+
+    if [ -n "$email" ] || [ -n "$account_id" ]; then
+      cat > "$final_dir/account.json" <<META
+{"email":"$email","account_id":"$account_id"}
+META
+    fi
+  done
+  shopt -u nullglob
+}
+
+promote_pending
 
 found=0
 first_session=""
@@ -28,6 +88,8 @@ fi
 
 if [ -n "${TMUX-}" ]; then
   tmux switch-client -t "$first_session"
-else
+elif [ -t 0 ]; then
   tmux attach -t "$first_session"
+else
+  printf 'Sessions started. Run: tmux attach -t %s\n' "$first_session"
 fi

@@ -40,15 +40,15 @@ export PATH="$HOME/bin:$PATH"
 ## 使用方法
 - 添加账号（首次登录）：
 ```bash
-codex-account-new
+~/bin/codex-account-new
 ```
-  - 如果不在 PATH：
-    ~/bin/codex-account-new
-    
+  - 如果当前终端不是交互式，会提示你用 `tmux attach -t setup-XXXX` 进入登录界面
+
 - 一键恢复所有账号：
 ```bash
-tmux-codex
+~/bin/tmux-codex
 ```
+  - 如果当前终端不是交互式，会提示你用 `tmux attach -t <session名>` 手动进入
 
 ## 同账号多窗口
 - 每个 tmux session 绑定一个独立的 Codex 账号

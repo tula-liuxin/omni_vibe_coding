@@ -10,7 +10,12 @@ mkdir -p "$pending_dir"
 export CODEX_HOME="$pending_dir"
 
 printf 'Logging in for this account...\n'
-codex login
+bash -lc "codex login" || true
+
+if [ ! -s "$CODEX_HOME/auth.json" ]; then
+  printf 'Login did not create auth.json. Aborting.\n'
+  exit 1
+fi
 
 IFS=$'\t' read -r name email account_id < <("$info_bin" "$CODEX_HOME")
 
@@ -18,7 +23,7 @@ IFS=$'\t' read -r name email account_id < <("$info_bin" "$CODEX_HOME")
 if [ -n "$account_id" ]; then
   for meta in "$accounts_dir"/*/account.json; do
     [ -f "$meta" ] || continue
-    existing_id="$(python3 - <<PY
+    existing_id="$(python3 - "$meta" <<'PY'
 import json
 import sys
 try:
@@ -28,7 +33,7 @@ try:
 except Exception:
     print('')
 PY
-"$meta")"
+)"
     if [ "$existing_id" = "$account_id" ]; then
       existing_dir="$(dirname "$meta")"
       existing_name="$(basename "$existing_dir")"

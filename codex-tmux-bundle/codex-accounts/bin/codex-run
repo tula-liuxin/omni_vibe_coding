@@ -31,4 +31,4 @@ META
   fi
 fi
 
-exec codex
+exec bash -lc "codex"
