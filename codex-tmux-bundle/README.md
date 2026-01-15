@@ -42,6 +42,9 @@ export PATH="$HOME/bin:$PATH"
 ```bash
 codex-account-new
 ```
+  - 如果不在 PATH：
+    ~/bin/codex-account-new
+    
 - 一键恢复所有账号：
 ```bash
 tmux-codex
