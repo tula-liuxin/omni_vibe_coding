@@ -49,6 +49,9 @@ export PATH="$HOME/bin:$PATH"
 ~/bin/tmux-codex
 ```
   - 如果当前终端不是交互式，会提示你用 `tmux attach -t <session名>` 手动进入
+  - 只会自动进入第一个 session，其它账号的 session 会在后台启动
+  - 查看所有 session：`tmux ls`
+  - 进入指定账号：`tmux attach -t <session名>`
 
 ## 同账号多窗口
 - 每个 tmux session 绑定一个独立的 Codex 账号
@@ -57,6 +60,22 @@ export PATH="$HOME/bin:$PATH"
   - 水平分屏：`Ctrl-b` 然后 `"`
   - 垂直分屏：`Ctrl-b` 然后 `%`
   - 切换窗口：`Ctrl-b` 然后数字键（0/1/2...）
+
+## 常用 tmux 命令
+- 列出所有 session：
+  ```bash
+  tmux ls
+  ```
+- 进入指定 session：
+  ```bash
+  tmux attach -t <session名>
+  ```
+- 强制接管已被占用的 session：
+  ```bash
+  tmux attach -d -t <session名>
+  ```
+- 退出当前 session（保留后台运行）：
+  - `Ctrl-b` 然后 `d`
 
 ## 恢复与重启
 - 只回到某个账号 session：
