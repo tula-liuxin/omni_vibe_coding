@@ -5,8 +5,24 @@ account_dir="$1"
 base_dir="$HOME/.codex-accounts"
 accounts_dir="$base_dir/accounts"
 info_bin="$base_dir/bin/codex-account-info"
+account_name="$(basename "$account_dir")"
+
+if [ -n "${TMUX-}" ]; then
+  session_name="$(tmux display-message -p '#S')"
+  session_env="$(tmux show-environment -t "$session_name" CODEX_HOME 2>/dev/null || true)"
+  if [[ "$session_env" == CODEX_HOME=* ]]; then
+    session_home="${session_env#CODEX_HOME=}"
+    if [ "$session_home" != "$account_dir" ]; then
+      printf 'This tmux session is locked to %s. Open another session for %s.\n' "$session_home" "$account_dir" >&2
+      exit 1
+    fi
+  fi
+  tmux set-environment -t "$session_name" CODEX_HOME "$account_dir"
+  tmux set-environment -t "$session_name" CODEX_ACCOUNT "$account_name"
+fi
 
 export CODEX_HOME="$account_dir"
+export CODEX_ACCOUNT="$account_name"
 
 # If the account identity changed, update session + directory name.
 if [ -f "$CODEX_HOME/auth.json" ]; then
@@ -20,10 +36,14 @@ if [ -f "$CODEX_HOME/auth.json" ]; then
       export CODEX_HOME="$new_dir"
       if [ -n "${TMUX-}" ]; then
         tmux rename-session "$desired_name" 2>/dev/null || true
+        tmux set-environment -t "$desired_name" CODEX_HOME "$new_dir"
+        tmux set-environment -t "$desired_name" CODEX_ACCOUNT "$desired_name"
       fi
     fi
   fi
 
+  account_name="$(basename "$CODEX_HOME")"
+  export CODEX_ACCOUNT="$account_name"
   if [ -n "$email" ] || [ -n "$account_id" ]; then
     cat > "$CODEX_HOME/account.json" <<META
 {"email":"$email","account_id":"$account_id"}

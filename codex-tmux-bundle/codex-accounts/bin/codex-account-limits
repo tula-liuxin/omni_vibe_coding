@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v tmux >/dev/null 2>&1; then
+  printf 'tmux not found.\n' >&2
+  exit 1
+fi
+
+mapfile -t sessions < <(tmux list-sessions -F "#{session_name}" 2>/dev/null || true)
+if [ "${#sessions[@]}" -eq 0 ]; then
+  printf 'No tmux sessions found.\n' >&2
+  exit 1
+fi
+
+printf 'account\t5h_limit\tweekly_limit\n'
+
+for session in "${sessions[@]}"; do
+  account="$session"
+  env_line="$(tmux show-environment -t "$session" CODEX_ACCOUNT 2>/dev/null || true)"
+  if [[ "$env_line" == CODEX_ACCOUNT=* ]]; then
+    account="${env_line#CODEX_ACCOUNT=}"
+  fi
+
+  pane_id="$(tmux list-panes -t "$session" -F "#{pane_id} #{pane_current_command}" \
+    | awk '$2=="codex"{print $1; exit}')"
+  if [ -z "$pane_id" ]; then
+    printf '%s\t%s\t%s\n' "$account" "no-codex-pane" "no-codex-pane"
+    continue
+  fi
+
+  tmux send-keys -t "$pane_id" "/status" Enter
+  sleep 1
+
+  tmux capture-pane -t "$pane_id" -p -S -200 | python3 - "$account" <<'PY'
+import re
+import sys
+
+account = sys.argv[1]
+text = sys.stdin.read()
+
+def last_line(pattern):
+    found = ""
+    for line in text.splitlines():
+        if re.search(pattern, line):
+            found = line.strip()
+    return found
+
+five = last_line(r"\b5h limit\b")
+week = last_line(r"\bWeekly limit\b")
+
+def clean(line):
+    if "limit:" in line:
+        return line.split("limit:", 1)[1].strip()
+    return "n/a"
+
+print(f"{account}\t{clean(five)}\t{clean(week)}")
+PY
+done

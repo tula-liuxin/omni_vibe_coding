@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -z "${TMUX-}" ]; then
+  printf 'Run inside tmux.\n' >&2
+  exit 1
+fi
+
+orientation="${1:-v}"
+case "$orientation" in
+  h|H|horizontal)
+    split_flag="-h"
+    ;;
+  v|V|vertical|"")
+    split_flag="-v"
+    ;;
+  *)
+    printf 'Usage: codex-agent-pane [v|h]\n' >&2
+    exit 1
+    ;;
+esac
+
+session="$(tmux display-message -p '#S')"
+pane_id="$(tmux split-window -P -F "#{pane_id}" -t "$session" $split_flag "bash -lc 'codex'")"
+sleep 0.5
+"$HOME/.codex-accounts/bin/codex-agent-sync" "$session" || true
+tmux select-pane -t "$pane_id"

@@ -76,8 +76,22 @@ for dir in "$accounts_dir"/*; do
   found=1
   name="$(basename "$dir")"
   [ -n "$first_session" ] || first_session="$name"
-  if ! tmux has-session -t "$name" 2>/dev/null; then
+  if tmux has-session -t "$name" 2>/dev/null; then
+    session_env="$(tmux show-environment -t "$name" CODEX_HOME 2>/dev/null || true)"
+    if [[ "$session_env" == CODEX_HOME=* ]]; then
+      session_home="${session_env#CODEX_HOME=}"
+      if [ "$session_home" != "$dir" ]; then
+        printf 'Session %s is locked to %s; expected %s. Skipping.\n' "$name" "$session_home" "$dir" >&2
+        continue
+      fi
+    else
+      tmux set-environment -t "$name" CODEX_HOME "$dir"
+      tmux set-environment -t "$name" CODEX_ACCOUNT "$name"
+    fi
+  else
     tmux new-session -d -s "$name" -n codex "$run_bin '$dir'"
+    tmux set-environment -t "$name" CODEX_HOME "$dir"
+    tmux set-environment -t "$name" CODEX_ACCOUNT "$name"
   fi
   done
 

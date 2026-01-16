@@ -8,6 +8,11 @@ info_bin="$base_dir/bin/codex-account-info"
 
 mkdir -p "$pending_dir"
 export CODEX_HOME="$pending_dir"
+if [ -n "${TMUX-}" ]; then
+  session_name="$(tmux display-message -p '#S')"
+  tmux set-environment -t "$session_name" CODEX_HOME "$pending_dir"
+  tmux set-environment -t "$session_name" CODEX_ACCOUNT "pending"
+fi
 
 printf 'Logging in for this account...\n'
 bash -lc "codex login" || true
@@ -65,6 +70,8 @@ export CODEX_HOME="$final_dir"
 
 if [ -n "${TMUX-}" ]; then
   tmux rename-session "$final_name" 2>/dev/null || true
+  tmux set-environment -t "$final_name" CODEX_HOME "$final_dir"
+  tmux set-environment -t "$final_name" CODEX_ACCOUNT "$final_name"
 fi
 
 if [ -n "$email" ] || [ -n "$account_id" ]; then

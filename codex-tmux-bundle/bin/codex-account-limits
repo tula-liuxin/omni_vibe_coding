@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec "$HOME/.codex-accounts/bin/codex-account-limits"

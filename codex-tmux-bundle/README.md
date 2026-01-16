@@ -55,11 +55,38 @@ export PATH="$HOME/bin:$PATH"
 
 ## 同账号多窗口
 - 每个 tmux session 绑定一个独立的 Codex 账号
+- 同一 session 的所有 window/pane 会强制使用同一账号（锁定 `CODEX_HOME`）
+- 在同一 session 中尝试切换到其他账号会被阻止
 - 同一个账号需要多个窗口/分屏时，在该 session 内操作：
   - 新窗口：`Ctrl-b` 然后 `c`
   - 水平分屏：`Ctrl-b` 然后 `"`
   - 垂直分屏：`Ctrl-b` 然后 `%`
   - 切换窗口：`Ctrl-b` 然后数字键（0/1/2...）
+
+## 层级代理（session -> window -> pane）
+- 规则
+  - session = 顶层代理（账号级）
+  - window = 子代理
+  - pane = 更细的子代理
+  - pane 会自动注入“我是谁/上级是谁”的提示词
+  - 注意：pane 必须在某个 session 的 window 里创建（不在 tmux 内会提示 Run inside tmux）
+  - 约定：window 的 pane 0 视为该 window 代理；session 的 window 0 / pane 0 视为 session 代理
+- 快捷命令
+  - 新建子代理 window 并启动 codex：
+    ```bash
+    ~/bin/codex-agent-window
+    ```
+    可指定名称：`~/bin/codex-agent-window A-1`
+  - 新建子代理 pane 并启动 codex：
+    ```bash
+    ~/bin/codex-agent-pane v
+    ```
+    `v`=上下分屏，`h`=左右分屏
+  - 同步/重注入提示词：
+    ```bash
+    ~/bin/codex-agent-sync
+    ```
+    强制重发：`~/bin/codex-agent-sync --force`
 
 ## 常用 tmux 命令
 - 列出所有 session：
@@ -77,6 +104,15 @@ export PATH="$HOME/bin:$PATH"
 - 退出当前 session（保留后台运行）：
   - `Ctrl-b` 然后 `d`
 
+## 查询账号限额
+- 输出所有账号的 5h / weekly 限额：
+  ```bash
+  ~/bin/codex-account-limits
+  ```
+- 说明：
+  - 脚本会向每个账号的 codex pane 发送 `/status`
+  - 需要对应 session 正在运行 codex
+
 ## 恢复与重启
 - 只回到某个账号 session：
   ```bash
@@ -91,4 +127,5 @@ export PATH="$HOME/bin:$PATH"
 - 通过 `account_id` 防止重复账号
 - 如登录账号变化，会自动更新 session 和目录名
 - 登录状态保存在 `~/.codex-accounts/accounts/<username>`
+- 每个 session 会设置 `CODEX_HOME` 和 `CODEX_ACCOUNT`，新 window/pane 会继承
 # omni_vibe_coding
