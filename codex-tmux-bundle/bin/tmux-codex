@@ -9,6 +9,11 @@ info_bin="$base_dir/bin/codex-account-info"
 
 mkdir -p "$accounts_dir"
 
+start_dir="${CODEX_START_DIR:-/mnt/c/Users/23677/agencyarche}"
+if [ ! -d "$start_dir" ]; then
+  start_dir="$HOME"
+fi
+
 promote_pending() {
   declare -A seen_ids=()
   shopt -s nullglob
@@ -89,9 +94,10 @@ for dir in "$accounts_dir"/*; do
       tmux set-environment -t "$name" CODEX_ACCOUNT "$name"
     fi
   else
-    tmux new-session -d -s "$name" -n codex "$run_bin '$dir'"
+    tmux new-session -d -s "$name" -n codex -c "$start_dir" "$run_bin" "$dir"
     tmux set-environment -t "$name" CODEX_HOME "$dir"
     tmux set-environment -t "$name" CODEX_ACCOUNT "$name"
+    tmux set-environment -t "$name" CODEX_START_DIR "$start_dir"
   fi
   done
 

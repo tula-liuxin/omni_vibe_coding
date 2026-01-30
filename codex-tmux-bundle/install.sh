@@ -21,6 +21,27 @@ if [ -f "$HOME/.tmux.conf" ]; then
     printf '\n# Codex tmux plugins\n' >> "$HOME/.tmux.conf"
     cat "$bundle_dir/.tmux.conf" >> "$HOME/.tmux.conf"
   fi
+  # Ensure mouse support is enabled
+  has_mouse=0
+  has_mode_keys=0
+  if command -v rg >/dev/null 2>&1; then
+    rg -q -F "set -g mouse on" "$HOME/.tmux.conf" && has_mouse=1 || true
+    rg -q -F "setw -g mode-keys vi" "$HOME/.tmux.conf" && has_mode_keys=1 || true
+  else
+    grep -qF "set -g mouse on" "$HOME/.tmux.conf" && has_mouse=1 || true
+    grep -qF "setw -g mode-keys vi" "$HOME/.tmux.conf" && has_mode_keys=1 || true
+  fi
+  if [ "$has_mouse" -eq 0 ] || [ "$has_mode_keys" -eq 0 ]; then
+    if ! grep -qF "Codex tmux extras" "$HOME/.tmux.conf"; then
+      printf '\n# Codex tmux extras\n' >> "$HOME/.tmux.conf"
+    fi
+    if [ "$has_mouse" -eq 0 ]; then
+      printf 'set -g mouse on\n' >> "$HOME/.tmux.conf"
+    fi
+    if [ "$has_mode_keys" -eq 0 ]; then
+      printf 'setw -g mode-keys vi\n' >> "$HOME/.tmux.conf"
+    fi
+  fi
 else
   cp -a "$bundle_dir/.tmux.conf" "$HOME/.tmux.conf"
 fi

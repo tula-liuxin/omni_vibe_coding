@@ -19,7 +19,5 @@ if [ -z "$name" ]; then
 fi
 
 pane_id="$(tmux new-window -P -F "#{pane_id}" -t "$session" -n "$name" "bash -lc 'codex'")"
-sleep 0.5
-"$HOME/.codex-accounts/bin/codex-agent-sync" "$session" || true
 tmux select-window -t "$session:$name"
 tmux select-pane -t "$pane_id"

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACCOUNT_DIR="${1:-${ACCOUNT_DIR:-}}"
+ACCOUNT_NAME="${2:-${ACCOUNT_NAME:-}}"
+DATA_DIR="${AGENCYARCHE_DATA_DIR:-${DATA_DIR:-}}"
+REPO_ROOT="${AGENCYARCHE_REPO_ROOT:-}"
+
+if [ -z "$ACCOUNT_DIR" ]; then
+  echo "missing account dir" >&2
+  exit 1
+fi
+if [ -z "$ACCOUNT_NAME" ]; then
+  ACCOUNT_NAME="$(basename "$ACCOUNT_DIR")"
+fi
+
+if [ -z "$DATA_DIR" ] && [ -n "$REPO_ROOT" ]; then
+  DATA_DIR="$REPO_ROOT/.data"
+fi
+if [ -z "$DATA_DIR" ]; then
+  DATA_DIR="$HOME/.codex-accounts/.data"
+fi
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup_dir="$DATA_DIR/raw_data/codex_accounts/archive/$ACCOUNT_NAME/$timestamp"
+mkdir -p "$backup_dir"
+
+python3 - <<'PY' "$backup_dir" "$ACCOUNT_DIR" "$ACCOUNT_NAME" "$timestamp"
+import json
+import os
+import shutil
+import sys
+
+backup_dir, account_dir, account_name, ts = sys.argv[1:5]
+sessions_dir = os.path.join(account_dir, "sessions")
+
+def copy_tree(src: str, dst: str) -> None:
+    if not os.path.isdir(src):
+        return
+    if hasattr(shutil, "copytree"):
+        try:
+            shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=shutil.copy)
+            return
+        except TypeError:
+            pass
+    shutil.copytree(src, dst, copy_function=shutil.copy)
+
+def copy_file(src: str, dst_dir: str) -> None:
+    if not os.path.isfile(src):
+        return
+    shutil.copy(src, os.path.join(dst_dir, os.path.basename(src)))
+
+try:
+    copy_tree(sessions_dir, os.path.join(backup_dir, "sessions"))
+    for fname in ("history.jsonl", "account.json", "version.json"):
+        copy_file(os.path.join(account_dir, fname), backup_dir)
+    payload = {
+        "account_name": account_name,
+        "account_dir": account_dir,
+        "backed_up_at": ts,
+        "source": "codex-account-logout",
+    }
+    with open(os.path.join(backup_dir, "backup_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+except Exception as exc:
+    print(f"backup failed: {exc}", file=sys.stderr)
+    sys.exit(1)
+PY
+
+if command -v codex >/dev/null 2>&1; then
+  CODEX_HOME="$ACCOUNT_DIR" CODEX_ACCOUNT="$ACCOUNT_NAME" codex logout || true
+fi
+
+if command -v tmux >/dev/null 2>&1; then
+  tmux kill-session -t "$ACCOUNT_NAME" >/dev/null 2>&1 || true
+fi
+
+rm -rf "$ACCOUNT_DIR"
+echo "Backed up sessions to $backup_dir"

@@ -68,7 +68,6 @@ export PATH="$HOME/bin:$PATH"
   - session = 顶层代理（账号级）
   - window = 子代理
   - pane = 更细的子代理
-  - pane 会自动注入“我是谁/上级是谁”的提示词
   - 注意：pane 必须在某个 session 的 window 里创建（不在 tmux 内会提示 Run inside tmux）
   - 约定：window 的 pane 0 视为该 window 代理；session 的 window 0 / pane 0 视为 session 代理
 - 快捷命令
@@ -82,11 +81,6 @@ export PATH="$HOME/bin:$PATH"
     ~/bin/codex-agent-pane v
     ```
     `v`=上下分屏，`h`=左右分屏
-  - 同步/重注入提示词：
-    ```bash
-    ~/bin/codex-agent-sync
-    ```
-    强制重发：`~/bin/codex-agent-sync --force`
 
 ## 常用 tmux 命令
 - 列出所有 session：
@@ -103,6 +97,15 @@ export PATH="$HOME/bin:$PATH"
   ```
 - 退出当前 session（保留后台运行）：
   - `Ctrl-b` 然后 `d`
+
+## 鼠标与选择
+- 开启鼠标支持（拖选会限制在 pane 内）：
+  - `~/.tmux.conf` 加：
+    ```bash
+    set -g mouse on
+    setw -g mode-keys vi
+    ```
+- 注意：按住 `Shift` 拖选会被终端接管，仍可能跨 pane；需用 tmux 复制模式或不按 `Shift`。
 
 ## 查询账号限额
 - 输出所有账号的 5h / weekly 限额：
@@ -128,4 +131,24 @@ export PATH="$HOME/bin:$PATH"
 - 如登录账号变化，会自动更新 session 和目录名
 - 登录状态保存在 `~/.codex-accounts/accounts/<username>`
 - 每个 session 会设置 `CODEX_HOME` 和 `CODEX_ACCOUNT`，新 window/pane 会继承
+
+## 项目开发流程（示例：/mnt/c/Users/23677/agencyarche）
+1) 启动所有账号 session：
+```bash
+~/bin/tmux-codex
+```
+2) 进入目标账号 session：
+```bash
+tmux attach -t <账号名>
+```
+3) 在主 pane 进入项目目录并启动 codex：
+```bash
+cd /mnt/c/Users/23677/agencyarche
+codex
+```
+4) 创建子代理：
+```bash
+~/bin/codex-agent-window
+~/bin/codex-agent-pane v
+```
 # omni_vibe_coding

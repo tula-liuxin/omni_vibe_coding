@@ -22,6 +22,4 @@ esac
 
 session="$(tmux display-message -p '#S')"
 pane_id="$(tmux split-window -P -F "#{pane_id}" -t "$session" $split_flag "bash -lc 'codex'")"
-sleep 0.5
-"$HOME/.codex-accounts/bin/codex-agent-sync" "$session" || true
 tmux select-pane -t "$pane_id"
