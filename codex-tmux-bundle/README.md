@@ -2,8 +2,8 @@
 
 ## 作用
 - 每个账号独立 `CODEX_HOME`，避免登录状态互相污染
-- tmux session 自动用登录邮箱（@ 前缀）命名
-- 一键恢复所有账号 session
+- tmux window 用登录邮箱命名（`.` 会被渲染为 `_`）
+- 一键恢复所有账号 window 到 `agent_account`
 
 ## 包含内容
 - `.tmux.conf`
@@ -44,20 +44,27 @@ export PATH="$HOME/bin:$PATH"
 ```
   - 如果当前终端不是交互式，会提示你用 `tmux attach -t setup-XXXX` 进入登录界面
 
-- 一键恢复所有账号：
+- 一键恢复所有账号（对齐到 `agent_account`）：
 ```bash
 ~/bin/tmux-codex
 ```
-  - 如果当前终端不是交互式，会提示你用 `tmux attach -t <session名>` 手动进入
-  - 只会自动进入第一个 session，其它账号的 session 会在后台启动
-  - 查看所有 session：`tmux ls`
-  - 进入指定账号：`tmux attach -t <session名>`
+  - 如果当前终端不是交互式，会提示你用 `tmux attach -t agent_account` 手动进入
+  - 只会启动/切换到 `agent_account`
+  - 查看所有 session：`tmux ls`（应只保留 `agent_account`）
+  - 切到指定账号：
+    ```bash
+    tmux attach -t agent_account
+    tmux select-window -t agent_account:<window名>
+    ```
+  - 可选：设置启动目录（新建 window 的默认 cwd）
+    ```bash
+    CODEX_START_DIR=/mnt/c/Users/23677/agencyarche ~/bin/tmux-codex
+    ```
 
 ## 同账号多窗口
-- 每个 tmux session 绑定一个独立的 Codex 账号
-- 同一 session 的所有 window/pane 会强制使用同一账号（锁定 `CODEX_HOME`）
-- 在同一 session 中尝试切换到其他账号会被阻止
-- 同一个账号需要多个窗口/分屏时，在该 session 内操作：
+- 所有账号共用一个 tmux session：`agent_account`
+- 每个账号对应一个 window（window 绑定 `CODEX_HOME`/`CODEX_ACCOUNT`）
+- 同一个账号需要多个窗口/分屏时，在该 window 内操作：
   - 新窗口：`Ctrl-b` 然后 `c`
   - 水平分屏：`Ctrl-b` 然后 `"`
   - 垂直分屏：`Ctrl-b` 然后 `%`
@@ -65,8 +72,8 @@ export PATH="$HOME/bin:$PATH"
 
 ## 层级代理（session -> window -> pane）
 - 规则
-  - session = 顶层代理（账号级）
-  - window = 子代理
+  - session = 顶层代理（统一 `agent_account`）
+  - window = 账号级代理
   - pane = 更细的子代理
   - 注意：pane 必须在某个 session 的 window 里创建（不在 tmux 内会提示 Run inside tmux）
   - 约定：window 的 pane 0 视为该 window 代理；session 的 window 0 / pane 0 视为 session 代理
@@ -89,11 +96,11 @@ export PATH="$HOME/bin:$PATH"
   ```
 - 进入指定 session：
   ```bash
-  tmux attach -t <session名>
+  tmux attach -t agent_account
   ```
 - 强制接管已被占用的 session：
   ```bash
-  tmux attach -d -t <session名>
+  tmux attach -d -t agent_account
   ```
 - 退出当前 session（保留后台运行）：
   - `Ctrl-b` 然后 `d`
@@ -113,33 +120,33 @@ export PATH="$HOME/bin:$PATH"
   ~/bin/codex-account-limits
   ```
 - 说明：
-  - 脚本会向每个账号的 codex pane 发送 `/status`
-  - 需要对应 session 正在运行 codex
+  - 脚本会向 `agent_account` 中每个账号的 codex pane 发送 `/status`
+  - 需要对应 window 正在运行 codex
 
 ## 恢复与重启
-- 只回到某个账号 session：
+- 回到 `agent_account`：
   ```bash
-  tmux attach -t <session名>
+  tmux attach -t agent_account
   ```
-  例：`tmux attach -t alice`
 - WSL 重启后：
-  - 运行 `tmux-codex` 一键重建/恢复所有账号 session
+  - 运行 `tmux-codex` 一键重建/恢复所有账号 window
   - 如需恢复窗口布局，进入 tmux 后用 `Ctrl-b` + `r`（tmux-resurrect）
 
 ## 行为说明
 - 通过 `account_id` 防止重复账号
-- 如登录账号变化，会自动更新 session 和目录名
+- 如登录账号变化，会自动更新 window 和目录名
 - 登录状态保存在 `~/.codex-accounts/accounts/<username>`
-- 每个 session 会设置 `CODEX_HOME` 和 `CODEX_ACCOUNT`，新 window/pane 会继承
+- 每个 window 会设置 `CODEX_HOME` 和 `CODEX_ACCOUNT`
 
 ## 项目开发流程（示例：/mnt/c/Users/23677/agencyarche）
-1) 启动所有账号 session：
+1) 启动所有账号 window：
 ```bash
 ~/bin/tmux-codex
 ```
-2) 进入目标账号 session：
+2) 进入 `agent_account` 并切换到目标账号 window：
 ```bash
-tmux attach -t <账号名>
+tmux attach -t agent_account
+tmux select-window -t agent_account:<window名>
 ```
 3) 在主 pane 进入项目目录并启动 codex：
 ```bash
@@ -151,4 +158,16 @@ codex
 ~/bin/codex-agent-window
 ~/bin/codex-agent-pane v
 ```
+
+## 更新 Codex 版本（WSL）
+- 使用用户级 npm prefix 避免 EACCES：
+  ```bash
+  export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+  export PATH="$HOME/.npm-global/bin:$PATH"
+  ```
+- 更新后重启 tmux pane 以生效：
+  ```bash
+  npm install -g @openai/codex
+  ~/bin/codex-tmux-refresh
+  ```
 # omni_vibe_coding

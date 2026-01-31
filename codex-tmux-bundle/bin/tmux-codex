@@ -6,13 +6,75 @@ accounts_dir="$base_dir/accounts"
 run_bin="$base_dir/bin/codex-run"
 new_bin="$base_dir/bin/codex-account-new"
 info_bin="$base_dir/bin/codex-account-info"
+session_name="agent_account"
 
 mkdir -p "$accounts_dir"
 
-start_dir="${CODEX_START_DIR:-/mnt/c/Users/23677/agencyarche}"
-if [ ! -d "$start_dir" ]; then
-  start_dir="$HOME"
+start_dir="${CODEX_START_DIR:-}"
+if [ -n "$start_dir" ] && [ ! -d "$start_dir" ]; then
+  start_dir=""
 fi
+
+sanitize_window() {
+  local raw="$1"
+  raw="${raw//./_}"
+  raw="$(printf '%s' "$raw" | tr ' /:\\' '____')"
+  raw="$(printf '%s' "$raw" | tr -cd 'A-Za-z0-9@._+-')"
+  raw="${raw#-}"
+  raw="${raw%-}"
+  printf '%s' "$raw"
+}
+
+account_email() {
+  local dir="$1"
+  local email=""
+  local meta="$dir/account.json"
+  if [ -f "$meta" ]; then
+    email="$(${PYTHON_BIN:-python3} - "$meta" <<'PY'
+import json
+import sys
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    print(data.get('email', '') or '')
+except Exception:
+    print('')
+PY
+)"
+  fi
+  if [ -z "$email" ] && [ -x "$info_bin" ]; then
+    IFS=$'\t' read -r _ email _ < <("$info_bin" "$dir")
+  fi
+  printf '%s' "$email"
+}
+
+unique_window_name() {
+  local base="$1"
+  local name="$base"
+  local i=2
+  while [ -n "${used_windows[$name]:-}" ]; do
+    name="${base}-$i"
+    i=$((i+1))
+  done
+  used_windows["$name"]=1
+  printf '%s' "$name"
+}
+
+dedupe_windows() {
+  declare -A seen_home=()
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    win_id="${line%% *}"
+    home="$(tmux show-options -w -t "$win_id" -v @codex_home 2>/dev/null || true)"
+    [ -z "$home" ] && continue
+    if [ -n "${seen_home[$home]:-}" ]; then
+      tmux kill-window -t "$win_id" >/dev/null 2>&1 || true
+      continue
+    fi
+    seen_home["$home"]=1
+  done < <(tmux list-windows -t "$session_name" -F "#{window_id} #{window_name}" 2>/dev/null || true)
+  return 0
+}
 
 promote_pending() {
   declare -A seen_ids=()
@@ -28,10 +90,10 @@ promote_pending() {
         rm -rf "$dir"
         continue
       fi
-      seen_ids[$account_id]=1
+      seen_ids["$account_id"]=1
       for meta in "$accounts_dir"/*/account.json; do
         [ -f "$meta" ] || continue
-        existing_id="$(python3 - "$meta" <<'PY'
+        existing_id="$(${PYTHON_BIN:-python3} - "$meta" <<'PY'
 import json
 import sys
 try:
@@ -71,34 +133,90 @@ META
   shopt -u nullglob
 }
 
+ensure_session() {
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    return 0
+  fi
+  if [ -n "$start_dir" ]; then
+    tmux new-session -d -s "$session_name" -n bootstrap -c "$start_dir" "sleep 3600"
+  else
+    tmux new-session -d -s "$session_name" -n bootstrap "sleep 3600"
+  fi
+}
+
+load_existing_windows() {
+  declare -gA window_by_home=()
+  declare -gA window_by_name=()
+  declare -gA used_windows=()
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    win_id="${line%% *}"
+    win_name="${line#* }"
+    used_windows["$win_name"]=1
+    window_by_name["$win_name"]="$win_id"
+    home="$(tmux show-options -w -t "$win_id" -v @codex_home 2>/dev/null || true)"
+    [ -n "$home" ] && window_by_home["$home"]="$win_id"
+  done < <(tmux list-windows -t "$session_name" -F "#{window_id} #{window_name}" 2>/dev/null || true)
+  return 0
+}
+
+prune_untracked_windows() {
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    win_id="${line%% *}"
+    home="$(tmux show-options -w -t "$win_id" -v @codex_home 2>/dev/null || true)"
+    if [ -z "$home" ]; then
+      tmux kill-window -t "$win_id" >/dev/null 2>&1 || true
+    fi
+  done < <(tmux list-windows -t "$session_name" -F "#{window_id} #{window_name}" 2>/dev/null || true)
+  return 0
+}
+
+migrate_old_sessions() {
+  while IFS= read -r sess; do
+    [ -z "$sess" ] && continue
+    [ "$sess" = "$session_name" ] && continue
+
+    acct_dir=""
+    env_line="$(tmux show-environment -t "$sess" CODEX_HOME 2>/dev/null || true)"
+    if [[ "$env_line" == CODEX_HOME=* ]]; then
+      acct_dir="${env_line#CODEX_HOME=}"
+    elif [ -d "$accounts_dir/$sess" ]; then
+      acct_dir="$accounts_dir/$sess"
+    else
+      continue
+    fi
+
+    email="$(account_email "$acct_dir")"
+    win_base="$(sanitize_window "${email:-$sess}")"
+    [ -n "$win_base" ] || win_base="acct"
+    win_name="$(unique_window_name "$win_base")"
+
+    mapfile -t win_ids < <(tmux list-windows -t "$sess" -F "#{window_id}" 2>/dev/null || true)
+    [ "${#win_ids[@]}" -eq 0 ] && continue
+
+    primary_id="${win_ids[0]}"
+    tmux move-window -s "$primary_id" -t "$session_name":
+    tmux rename-window -t "$primary_id" "$win_name" 2>/dev/null || true
+    tmux set-option -w -t "$primary_id" @codex_home "$acct_dir"
+    [ -n "$email" ] && tmux set-option -w -t "$primary_id" @codex_account "$email"
+
+    for wid in "${win_ids[@]:1}"; do
+      tmux kill-window -t "$wid" >/dev/null 2>&1 || true
+    done
+
+    tmux kill-session -t "$sess" >/dev/null 2>&1 || true
+  done < <(tmux list-sessions -F "#{session_name}" 2>/dev/null || true)
+  return 0
+}
+
 promote_pending
 
 found=0
-first_session=""
-
 for dir in "$accounts_dir"/*; do
   [ -d "$dir" ] || continue
   found=1
-  name="$(basename "$dir")"
-  [ -n "$first_session" ] || first_session="$name"
-  if tmux has-session -t "$name" 2>/dev/null; then
-    session_env="$(tmux show-environment -t "$name" CODEX_HOME 2>/dev/null || true)"
-    if [[ "$session_env" == CODEX_HOME=* ]]; then
-      session_home="${session_env#CODEX_HOME=}"
-      if [ "$session_home" != "$dir" ]; then
-        printf 'Session %s is locked to %s; expected %s. Skipping.\n' "$name" "$session_home" "$dir" >&2
-        continue
-      fi
-    else
-      tmux set-environment -t "$name" CODEX_HOME "$dir"
-      tmux set-environment -t "$name" CODEX_ACCOUNT "$name"
-    fi
-  else
-    tmux new-session -d -s "$name" -n codex -c "$start_dir" "$run_bin" "$dir"
-    tmux set-environment -t "$name" CODEX_HOME "$dir"
-    tmux set-environment -t "$name" CODEX_ACCOUNT "$name"
-    tmux set-environment -t "$name" CODEX_START_DIR "$start_dir"
-  fi
+  break
   done
 
 if [ "$found" -eq 0 ]; then
@@ -106,10 +224,65 @@ if [ "$found" -eq 0 ]; then
   exec "$new_bin"
 fi
 
+after_create=0
+ensure_session
+load_existing_windows
+migrate_old_sessions
+prune_untracked_windows
+load_existing_windows
+
+for dir in "$accounts_dir"/*; do
+  [ -d "$dir" ] || continue
+  if [ -n "${window_by_home[$dir]:-}" ]; then
+    continue
+  fi
+  email="$(account_email "$dir")"
+  win_base="$(sanitize_window "${email:-$(basename "$dir")}")"
+  [ -n "$win_base" ] || win_base="acct"
+  win_name="$(unique_window_name "$win_base")"
+
+  if [ -n "${window_by_name[$win_name]:-}" ]; then
+    win_id="${window_by_name[$win_name]}"
+    tmux set-option -w -t "$win_id" @codex_home "$dir"
+    [ -n "$email" ] && tmux set-option -w -t "$win_id" @codex_account "$email"
+    window_by_home["$dir"]="$win_id"
+    continue
+  fi
+
+  if [ -n "$start_dir" ]; then
+    tmux new-window -t "$session_name" -n "$win_name" -c "$start_dir" "$run_bin" "$dir"
+  else
+    tmux new-window -t "$session_name" -n "$win_name" "$run_bin '$dir'"
+  fi
+  win_id="$(tmux display-message -p -t "$session_name:$win_name" '#{window_id}')"
+  tmux set-option -w -t "$win_id" @codex_home "$dir"
+  [ -n "$email" ] && tmux set-option -w -t "$win_id" @codex_account "$email"
+  after_create=1
+  window_by_home["$dir"]="$win_id"
+  done
+
+# Remove bootstrap window if it still exists and we created real windows.
+if [ "$after_create" -eq 1 ]; then
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    win_id="${line%% *}"
+    win_name="${line#* }"
+    if [ "$win_name" = "bootstrap" ]; then
+      tmux kill-window -t "$win_id" >/dev/null 2>&1 || true
+    fi
+  done < <(tmux list-windows -t "$session_name" -F "#{window_id} #{window_name}" 2>/dev/null || true)
+fi
+
+dedupe_windows
+
+if [ -n "${TMUX_CODEX_NO_ATTACH:-}" ]; then
+  exit 0
+fi
+
 if [ -n "${TMUX-}" ]; then
-  tmux switch-client -t "$first_session"
+  tmux switch-client -t "$session_name"
 elif [ -t 0 ]; then
-  tmux attach -t "$first_session"
+  tmux attach -t "$session_name"
 else
-  printf 'Sessions started. Run: tmux attach -t %s\n' "$first_session"
+  printf 'Session started. Run: tmux attach -t %s\n' "$session_name"
 fi
