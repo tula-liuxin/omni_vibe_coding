@@ -44,6 +44,9 @@ export PATH="$HOME/bin:$PATH"
 ```
   - 如果当前终端不是交互式，会提示你用 `tmux attach -t setup-XXXX` 进入登录界面
 
+- 默认启动命令：
+  - `codex --search --sandbox danger-full-access -c model_reasoning_effort=xhigh`
+
 - 一键恢复所有账号（对齐到 `agent_account`）：
 ```bash
 ~/bin/tmux-codex

@@ -21,5 +21,5 @@ case "$orientation" in
 esac
 
 session="$(tmux display-message -p '#S')"
-pane_id="$(tmux split-window -P -F "#{pane_id}" -t "$session" $split_flag "bash -lc 'codex'")"
+pane_id="$(tmux split-window -P -F "#{pane_id}" -t "$session" $split_flag "bash -lc 'codex --search --sandbox danger-full-access -c model_reasoning_effort=xhigh'")"
 tmux select-pane -t "$pane_id"

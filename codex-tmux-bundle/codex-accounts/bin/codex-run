@@ -51,4 +51,4 @@ META
   fi
 fi
 
-exec bash -lc "codex"
+exec bash -lc "codex --search --sandbox danger-full-access -c model_reasoning_effort=xhigh"

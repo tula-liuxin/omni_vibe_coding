@@ -18,6 +18,6 @@ if [ -z "$name" ]; then
   name="${session}-${next}"
 fi
 
-pane_id="$(tmux new-window -P -F "#{pane_id}" -t "$session" -n "$name" "bash -lc 'codex'")"
+pane_id="$(tmux new-window -P -F "#{pane_id}" -t "$session" -n "$name" "bash -lc 'codex --search --sandbox danger-full-access -c model_reasoning_effort=xhigh'")"
 tmux select-window -t "$session:$name"
 tmux select-pane -t "$pane_id"
