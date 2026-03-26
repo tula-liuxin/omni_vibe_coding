@@ -1,0 +1,102 @@
+[CmdletBinding()]
+param(
+  [string]$SkillRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+  [string]$ManagerHome = (Join-Path $env:USERPROFILE ".codex-manager"),
+  [string]$LauncherDir = (Join-Path $env:APPDATA "npm"),
+  [string]$CommandName = "codex_m",
+  [switch]$SkipNpmInstall
+)
+
+$ErrorActionPreference = "Stop"
+
+function Write-Utf8NoBom {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Content
+  )
+
+  $encoding = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
+function Require-Command {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+    throw "Required command not found: $Name"
+  }
+}
+
+$ResolvedSkillRoot = (Resolve-Path $SkillRoot).Path
+$AssetRoot = Join-Path $ResolvedSkillRoot "assets\\windows-runtime"
+$DefaultManagerHome = (Join-Path $env:USERPROFILE ".codex-manager")
+
+foreach ($RequiredAsset in @("index.mjs", "package.json", "package-lock.json")) {
+  $AssetPath = Join-Path $AssetRoot $RequiredAsset
+  if (-not (Test-Path $AssetPath)) {
+    throw "Missing runtime asset: $AssetPath"
+  }
+}
+
+Require-Command -Name node
+if (-not $SkipNpmInstall) {
+  Require-Command -Name npm
+}
+
+if ($ManagerHome -ne $DefaultManagerHome) {
+  Write-Warning "The current Windows runtime still stores its state under $DefaultManagerHome. Changing -ManagerHome only changes where runtime files are installed, not the runtime's internal default state path."
+}
+
+New-Item -ItemType Directory -Force -Path $ManagerHome | Out-Null
+New-Item -ItemType Directory -Force -Path $LauncherDir | Out-Null
+
+Copy-Item -Path (Join-Path $AssetRoot "index.mjs") -Destination (Join-Path $ManagerHome "index.mjs") -Force
+Copy-Item -Path (Join-Path $AssetRoot "package.json") -Destination (Join-Path $ManagerHome "package.json") -Force
+Copy-Item -Path (Join-Path $AssetRoot "package-lock.json") -Destination (Join-Path $ManagerHome "package-lock.json") -Force
+
+if (-not $SkipNpmInstall) {
+  Push-Location $ManagerHome
+  try {
+    & npm install --omit=dev --no-fund --no-audit
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm install failed with exit code $LASTEXITCODE"
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
+$EntryPath = Join-Path $ManagerHome "index.mjs"
+$Ps1LauncherPath = Join-Path $LauncherDir "$CommandName.ps1"
+$CmdLauncherPath = Join-Path $LauncherDir "$CommandName.cmd"
+
+$Ps1Content = @(
+  "param(",
+  "  [Parameter(ValueFromRemainingArguments = `$true)]",
+  "  [string[]]`$ArgsFromCaller",
+  ")",
+  ('& node "{0}" @ArgsFromCaller' -f $EntryPath.Replace('"', '`"')),
+  "exit `$LASTEXITCODE",
+  ""
+) -join "`r`n"
+
+$CmdContent = @(
+  "@echo off",
+  "setlocal",
+  ('node "{0}" %*' -f $EntryPath),
+  "exit /b %errorlevel%",
+  ""
+) -join "`r`n"
+
+Write-Utf8NoBom -Path $Ps1LauncherPath -Content $Ps1Content
+Write-Utf8NoBom -Path $CmdLauncherPath -Content $CmdContent
+
+Write-Host "Installed codex_m runtime."
+Write-Host "Skill root : $ResolvedSkillRoot"
+Write-Host "Manager home: $ManagerHome"
+Write-Host "Launcher dir: $LauncherDir"
+Write-Host "PS1 launcher: $Ps1LauncherPath"
+Write-Host "CMD launcher: $CmdLauncherPath"
