@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$SkillRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+  [string]$SkillRoot,
   [string]$ManagerHome = (Join-Path $env:USERPROFILE ".codex-manager"),
   [string]$LauncherDir = (Join-Path $env:APPDATA "npm"),
   [string]$CommandName = "codex_m",
@@ -8,6 +8,24 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $SkillRoot) {
+  $ScriptRoot =
+    if ($PSScriptRoot) {
+      $PSScriptRoot
+    }
+    elseif ($PSCommandPath) {
+      Split-Path -Parent $PSCommandPath
+    }
+    elseif ($MyInvocation.MyCommand.Path) {
+      Split-Path -Parent $MyInvocation.MyCommand.Path
+    }
+    else {
+      (Get-Location).Path
+    }
+
+  $SkillRoot = (Resolve-Path (Join-Path $ScriptRoot "..")).Path
+}
 
 function Write-Utf8NoBom {
   param(

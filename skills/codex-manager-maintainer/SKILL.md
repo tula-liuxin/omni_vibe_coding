@@ -11,6 +11,7 @@ description: Install, repair, upgrade, and extend codex_m as a machine-local Cod
 - Preserve the user-facing behavior contract even when the implementation changes by platform.
 - Prefer effect parity over code parity.
 - Treat shared logic and user-facing behavior as the durable core.
+- Treat saved login snapshots as durable data with explicit identity rules, not as disposable cache.
 - If the active platform does not yet have bundled installer/runtime assets, build the missing platform adapter from the common contract instead of blocking on missing scaffolding.
 
 ## Workflow
@@ -29,8 +30,12 @@ description: Install, repair, upgrade, and extend codex_m as a machine-local Cod
    - explain or debug login/workspace behavior
    - add or refine platform support
 6. Use bundled scripts and assets when they fit the current platform. Do not rewrite Windows launchers or runtime files from scratch when the bundled Windows assets already match the requested behavior.
-7. If the active platform does not yet have a bundled installer/runtime, derive the implementation from the common contract plus the active platform reference, keep unrelated platform detail out of the explanation, and persist the new adapter cleanly under `scripts/`, `assets/`, and `references/`.
-8. Validate behavior, not just file presence.
+7. When the task involves login persistence, tuple overwrite, or workspace/account confusion, inspect all three layers together:
+   - tuple identity and compaction rules in runtime state
+   - saved auth snapshot storage layout
+   - activation/config behavior in official `auth.json` and `config.toml`
+8. If the active platform does not yet have a bundled installer/runtime, derive the implementation from the common contract plus the active platform reference, keep unrelated platform detail out of the explanation, and persist the new adapter cleanly under `scripts/`, `assets/`, and `references/`.
+9. Validate behavior, not just file presence.
 
 ## Stable Contract
 
@@ -41,6 +46,7 @@ Keep these behaviors stable unless the user explicitly asks to change them:
 - `Use current signed-in Codex` is an advanced recovery/import path.
 - After login or import, prompt for a manual workspace name.
 - `Manage` lists only real saved login snapshots.
+- Distinct `(account_email, chatgpt_account_id)` snapshots must remain separately saved and manageable when the email differs.
 - `Enter` switches to the selected snapshot.
 - `Tab` opens `Rename` and `Logout`.
 - `Logout` deletes the saved snapshot, not shared sessions/history/config.
@@ -59,7 +65,7 @@ Keep these behaviors stable unless the user explicitly asks to change them:
 - `scripts/detect_environment.js`
   Use to inspect OS, shell, expected launcher paths, Codex paths, and whether `codex_m` already exists.
 - `scripts/validate_codex_manager.js`
-  Use to verify an installed `codex_m` footprint and catch auth/config placement problems.
+  Use to verify an installed `codex_m` footprint, catch auth/config placement problems, and detect duplicate saved snapshot identities.
 - `scripts/install_windows.ps1`
   Use on Windows to install or update `codex_m` from bundled assets.
 - `assets/windows-runtime/`
@@ -72,6 +78,7 @@ Keep these behaviors stable unless the user explicitly asks to change them:
 ## Guardrails
 
 - Do not use `organizations[].id` as a real switch target.
+- Do not collapse different emails into one saved snapshot just because they share one real login workspace id.
 - Do not delete shared Codex session/history state as part of normal logout or repair.
 - Do not assume launcher paths or shell wrappers are identical across platforms.
 - Do not overwrite unrelated `~/.codex/config.toml` content; only patch the managed keys.

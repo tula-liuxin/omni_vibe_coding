@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
@@ -82,13 +83,20 @@ function loadState() {
         tuple.login_workspace_id = tuple.account_id;
         changed = true;
       }
+      if (!tuple.auth_storage_key) {
+        tuple.auth_storage_key = getTupleAuthStorageKey(tuple);
+        changed = true;
+      }
       if (!("visible_workspaces" in tuple)) {
         tuple.visible_workspaces = [];
         changed = true;
       }
     }
   }
-  if (compactStateToRealLoginWorkspaces(state)) {
+  if (compactStateToSavedSnapshots(state)) {
+    changed = true;
+  }
+  if (migrateSavedAuthCopies(state)) {
     changed = true;
   }
   if (state.schema_version !== VERSION) {
@@ -158,20 +166,81 @@ function extractAuthMeta(authData) {
   };
 }
 
-function accountDir(accountId) {
-  return path.join(ACCOUNTS_DIR, accountId);
-}
-
-function savedAuthPath(accountId) {
-  return path.join(accountDir(accountId), "auth.json");
-}
-
 function getTupleLoginWorkspaceId(tuple) {
   return tuple?.login_workspace_id || tuple?.account_id || null;
 }
 
-function canonicalTupleIdForLoginWorkspaceId(loginWorkspaceId) {
-  return tupleIdFor(loginWorkspaceId, loginWorkspaceId);
+function normalizeAccountEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function getMetaLoginWorkspaceId(meta) {
+  return meta?.login_workspace_id || meta?.account_id || null;
+}
+
+function createSnapshotStorageKey(loginWorkspaceId, accountEmail) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        login_workspace_id: String(loginWorkspaceId || "").trim(),
+        account_email: normalizeAccountEmail(accountEmail),
+      }),
+    )
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function authSnapshotDir(authStorageKey) {
+  return path.join(ACCOUNTS_DIR, authStorageKey);
+}
+
+function savedAuthPath(authStorageKey) {
+  return path.join(authSnapshotDir(authStorageKey), "auth.json");
+}
+
+function getTupleIdentityKey(tuple) {
+  const loginWorkspaceId = getTupleLoginWorkspaceId(tuple);
+  if (!loginWorkspaceId) {
+    return null;
+  }
+  return JSON.stringify({
+    login_workspace_id: loginWorkspaceId,
+    account_email: normalizeAccountEmail(tuple?.account_email || ""),
+  });
+}
+
+function getMetaIdentityKey(meta) {
+  const loginWorkspaceId = getMetaLoginWorkspaceId(meta);
+  if (!loginWorkspaceId) {
+    return null;
+  }
+  return JSON.stringify({
+    login_workspace_id: loginWorkspaceId,
+    account_email: normalizeAccountEmail(meta?.account_email || ""),
+  });
+}
+
+function getTupleAuthStorageKey(tuple) {
+  if (tuple?.auth_storage_key) {
+    return tuple.auth_storage_key;
+  }
+  const loginWorkspaceId = getTupleLoginWorkspaceId(tuple);
+  if (!loginWorkspaceId) {
+    return tuple?.account_id || null;
+  }
+  return createSnapshotStorageKey(loginWorkspaceId, tuple?.account_email || "");
+}
+
+function getMetaAuthStorageKey(meta) {
+  const loginWorkspaceId = getMetaLoginWorkspaceId(meta);
+  if (!loginWorkspaceId) {
+    return meta?.account_id || null;
+  }
+  return createSnapshotStorageKey(loginWorkspaceId, meta?.account_email || "");
+}
+
+function canonicalTupleIdForSnapshot(authStorageKey, loginWorkspaceId) {
+  return tupleIdFor(authStorageKey, loginWorkspaceId);
 }
 
 function tupleTimestamp(tuple) {
@@ -240,35 +309,49 @@ function firstNonEmptyTupleField(tuples, key, fallback = "") {
   return fallback;
 }
 
-function compactStateToRealLoginWorkspaces(state) {
+function compactStateToSavedSnapshots(state) {
   const grouped = new Map();
 
   for (const tuple of Object.values(state.tuples)) {
     if (!tuple || typeof tuple !== "object") {
       continue;
     }
-    const loginWorkspaceId = getTupleLoginWorkspaceId(tuple);
-    if (!loginWorkspaceId) {
+    const identityKey = getTupleIdentityKey(tuple);
+    if (!identityKey) {
       continue;
     }
-    const list = grouped.get(loginWorkspaceId) || [];
+    const list = grouped.get(identityKey) || [];
     list.push(tuple);
-    grouped.set(loginWorkspaceId, list);
+    grouped.set(identityKey, list);
   }
 
   const nextTuples = {};
   let nextActiveTupleId = null;
   let changed = false;
 
-  for (const [loginWorkspaceId, tuples] of grouped.entries()) {
+  for (const tuples of grouped.values()) {
     const canonical = chooseCanonicalTuple(tuples, state.active_tuple_id);
-    const canonicalTupleId = canonicalTupleIdForLoginWorkspaceId(loginWorkspaceId);
+    const loginWorkspaceId =
+      getTupleLoginWorkspaceId(canonical) ||
+      firstNonEmptyTupleField(tuples, "login_workspace_id", canonical.account_id || "");
+    const accountEmail = firstNonEmptyTupleField(
+      tuples,
+      "account_email",
+      canonical.account_email || "",
+    );
+    const authStorageKey = createSnapshotStorageKey(loginWorkspaceId, accountEmail);
+    const canonicalTupleId = canonicalTupleIdForSnapshot(authStorageKey, loginWorkspaceId);
     const normalized = {
       ...canonical,
       tuple_id: canonicalTupleId,
-      account_id: loginWorkspaceId,
+      auth_storage_key: authStorageKey,
+      account_id: firstNonEmptyTupleField(
+        tuples,
+        "account_id",
+        canonical.account_id || loginWorkspaceId,
+      ),
       login_workspace_id: loginWorkspaceId,
-      account_email: firstNonEmptyTupleField(tuples, "account_email", canonical.account_email || ""),
+      account_email: accountEmail,
       account_name: firstNonEmptyTupleField(tuples, "account_name", canonical.account_name || ""),
       plan_type: firstNonEmptyTupleField(tuples, "plan_type", canonical.plan_type || ""),
       workspace_id: "",
@@ -287,6 +370,7 @@ function compactStateToRealLoginWorkspaces(state) {
     if (
       tuples.length > 1 ||
       canonical.tuple_id !== canonicalTupleId ||
+      canonical.auth_storage_key !== normalized.auth_storage_key ||
       canonical.account_id !== normalized.account_id ||
       canonical.workspace_id !== normalized.workspace_id ||
       canonical.workspace_title !== normalized.workspace_title ||
@@ -311,6 +395,38 @@ function compactStateToRealLoginWorkspaces(state) {
 
   state.tuples = nextTuples;
   state.active_tuple_id = nextActiveTupleId;
+  return changed;
+}
+
+function migrateSavedAuthCopies(state) {
+  let changed = false;
+
+  for (const tuple of Object.values(state.tuples)) {
+    const authStorageKey = getTupleAuthStorageKey(tuple);
+    if (!authStorageKey) {
+      continue;
+    }
+
+    const targetPath = savedAuthPath(authStorageKey);
+    if (fs.existsSync(targetPath)) {
+      continue;
+    }
+
+    const legacyKeys = [tuple.account_id].filter(
+      (candidate) => candidate && candidate !== authStorageKey,
+    );
+    for (const legacyKey of legacyKeys) {
+      const legacyPath = savedAuthPath(legacyKey);
+      if (!fs.existsSync(legacyPath)) {
+        continue;
+      }
+      ensureDir(authSnapshotDir(authStorageKey));
+      fs.copyFileSync(legacyPath, targetPath);
+      changed = true;
+      break;
+    }
+  }
+
   return changed;
 }
 
@@ -394,10 +510,13 @@ function renameTupleAlias(state, tupleId, alias) {
 }
 
 function createTupleFromMeta(meta, alias) {
+  const loginWorkspaceId = getMetaLoginWorkspaceId(meta);
+  const authStorageKey = getMetaAuthStorageKey(meta);
   return {
-    tuple_id: canonicalTupleIdForLoginWorkspaceId(meta.login_workspace_id || meta.account_id),
+    tuple_id: canonicalTupleIdForSnapshot(authStorageKey, loginWorkspaceId),
+    auth_storage_key: authStorageKey,
     account_id: meta.account_id,
-    login_workspace_id: meta.login_workspace_id || meta.account_id,
+    login_workspace_id: loginWorkspaceId,
     account_email: meta.account_email,
     account_name: meta.account_name,
     plan_type: meta.plan_type,
@@ -607,7 +726,7 @@ function assertNoRunningCodexProcesses() {
 }
 
 function saveAccountAuth(accountId, authData) {
-  ensureDir(accountDir(accountId));
+  ensureDir(authSnapshotDir(accountId));
   writeJson(savedAuthPath(accountId), authData);
 }
 
@@ -633,7 +752,7 @@ async function activateTuple(state, tupleId, { silent = false, skipProcessCheck 
   if (!skipProcessCheck) {
     assertNoRunningCodexProcesses();
   }
-  copySavedAuthToOfficial(tuple.account_id);
+  copySavedAuthToOfficial(getTupleAuthStorageKey(tuple));
   applyManagedConfig(getTupleLoginWorkspaceId(tuple));
   tuple.last_used_at = isoNow();
   state.active_tuple_id = tupleId;
@@ -655,10 +774,10 @@ function removeTupleAndMaybeAccount(state, tupleId) {
   delete state.tuples[tupleId];
 
   const hasRemainingForAccount = Object.values(state.tuples).some(
-    (item) => item.account_id === tuple.account_id,
+    (item) => getTupleAuthStorageKey(item) === getTupleAuthStorageKey(tuple),
   );
   if (!hasRemainingForAccount) {
-    const dirPath = accountDir(tuple.account_id);
+    const dirPath = authSnapshotDir(getTupleAuthStorageKey(tuple));
     if (fs.existsSync(dirPath)) {
       fs.rmSync(dirPath, { recursive: true, force: true });
     }
@@ -720,25 +839,26 @@ function doctorReport(state) {
   }
 
   for (const tuple of Object.values(state.tuples)) {
-    if (!fs.existsSync(savedAuthPath(tuple.account_id))) {
+    if (!fs.existsSync(savedAuthPath(getTupleAuthStorageKey(tuple)))) {
       issues.push(`Saved auth missing for tuple ${tuple.tuple_id}`);
     }
   }
 
-  const tuplesByLoginWorkspace = new Map();
+  const tuplesByIdentity = new Map();
   for (const tuple of Object.values(state.tuples)) {
-    const loginWorkspaceId = getTupleLoginWorkspaceId(tuple);
-    if (!loginWorkspaceId) {
+    const identityKey = getTupleIdentityKey(tuple);
+    if (!identityKey) {
       continue;
     }
-    const existing = tuplesByLoginWorkspace.get(loginWorkspaceId) || [];
+    const existing = tuplesByIdentity.get(identityKey) || [];
     existing.push(tuple.tuple_id);
-    tuplesByLoginWorkspace.set(loginWorkspaceId, existing);
+    tuplesByIdentity.set(identityKey, existing);
   }
-  for (const [loginWorkspaceId, tupleIds] of tuplesByLoginWorkspace.entries()) {
+  for (const [identityKey, tupleIds] of tuplesByIdentity.entries()) {
     if (tupleIds.length > 1) {
+      const parsed = JSON.parse(identityKey);
       issues.push(
-        `Multiple saved tuples share the same real login workspace id ${loginWorkspaceId}: ${tupleIds.join(", ")}`,
+        `Multiple saved tuples share the same saved snapshot identity (${parsed.account_email || "(unknown email)"} | ${parsed.login_workspace_id}): ${tupleIds.join(", ")}`,
       );
     }
   }
@@ -790,8 +910,8 @@ function doctorReport(state) {
   return issues;
 }
 
-function latestMetaForAccount(accountId) {
-  return extractAuthMeta(readJson(savedAuthPath(accountId)));
+function latestMetaForTuple(tuple) {
+  return extractAuthMeta(readJson(savedAuthPath(getTupleAuthStorageKey(tuple))));
 }
 
 function summarizeState(state) {
@@ -918,7 +1038,7 @@ function printOverview(state) {
   console.log("  codex_m login");
   console.log("  codex_m logout");
   console.log("  codex_m list");
-  console.log("  codex_m workspaces [--account-id <id>] [--json]");
+  console.log("  codex_m workspaces [--account-id <id>] [--tuple-id <tuple-id>] [--json]");
   console.log("  codex_m capture");
   console.log("  codex_m import-current");
   console.log("  codex_m add-workspace");
@@ -1424,10 +1544,10 @@ async function interactiveRegisterTupleFromAuthData(authData, options = {}) {
   }
 
   const alias = options.alias || (await interactivePromptManualName(""));
-  saveAccountAuth(meta.account_id, authData);
+  saveAccountAuth(getMetaAuthStorageKey(meta), authData);
 
   const existing = getAllTuples(state).find(
-    (tuple) => getTupleLoginWorkspaceId(tuple) === meta.login_workspace_id,
+    (tuple) => getTupleIdentityKey(tuple) === getMetaIdentityKey(meta),
   );
   const tuple = createTupleFromMeta(meta, alias);
   if (existing) {
@@ -1456,10 +1576,10 @@ async function registerTupleFromAuthData(authData, options = {}) {
   }
   const alias = await promptManualWorkspaceName(options.alias || null);
 
-  saveAccountAuth(meta.account_id, authData);
+  saveAccountAuth(getMetaAuthStorageKey(meta), authData);
 
   const existing = getAllTuples(state).find(
-    (tuple) => getTupleLoginWorkspaceId(tuple) === meta.login_workspace_id,
+    (tuple) => getTupleIdentityKey(tuple) === getMetaIdentityKey(meta),
   );
   const tuple = createTupleFromMeta(meta, alias);
   if (existing) {
@@ -1490,12 +1610,16 @@ async function handleList(state, args) {
 
 async function handleWorkspaces(state, args) {
   let accountId = null;
+  let tupleId = null;
   let json = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--account-id") {
       accountId = parseOptionValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--tuple-id") {
+      tupleId = parseOptionValue(args, index, arg);
       index += 1;
     } else if (arg === "--json") {
       json = true;
@@ -1504,8 +1628,43 @@ async function handleWorkspaces(state, args) {
     }
   }
 
-  const account = await chooseAccount(state, accountId);
-  const meta = latestMetaForAccount(account.account_id);
+  const matches = tupleId
+    ? [requireTuple(state, tupleId)]
+    : getAllTuples(state).filter((tuple) => !accountId || tuple.account_id === accountId);
+  if (!matches.length) {
+    throw new Error(accountId ? `Account ${accountId} is not saved.` : "No saved tuples exist yet.");
+  }
+
+  let tuple = null;
+  if (matches.length === 1) {
+    tuple = matches[0];
+  } else if (!process.stdin.isTTY) {
+    if (accountId) {
+      throw new Error(
+        `Multiple saved tuples share login workspace ${accountId}. Specify --tuple-id explicitly.`,
+      );
+    }
+    throw new Error("Multiple saved tuples exist. Specify --tuple-id explicitly.");
+  } else {
+    console.log("Saved tuples:");
+    matches.forEach((item, matchIndex) => {
+      console.log(
+        `  ${matchIndex + 1}. ${item.alias} | ${item.account_email || "(unknown email)"} | ${formatTupleWorkspaceSummary(item)}`,
+      );
+      console.log(`     tuple_id: ${item.tuple_id}`);
+    });
+    const answer = await promptRequired(
+      "Choose tuple number: ",
+      "Tuple selection is required.",
+    );
+    const parsed = Number(answer);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > matches.length) {
+      throw new Error("Invalid tuple selection.");
+    }
+    tuple = matches[parsed - 1];
+  }
+
+  const meta = latestMetaForTuple(tuple);
   const payload = meta.organizations.map((workspace) => ({
     workspace_id: workspace.id,
     official_title: workspace.title,
@@ -1515,16 +1674,17 @@ async function handleWorkspaces(state, args) {
 
   if (json) {
     printJson({
-      account_id: account.account_id,
-      account_email: account.account_email,
-      login_workspace_id: meta.login_workspace_id || account.account_id,
+      tuple_id: tuple.tuple_id,
+      account_id: tuple.account_id,
+      account_email: tuple.account_email,
+      login_workspace_id: meta.login_workspace_id || tuple.account_id,
       visible_org_hints: payload,
     });
     return;
   }
 
-  console.log(`Account: ${account.account_email || account.account_id}`);
-  console.log(`Real login workspace id: ${meta.login_workspace_id || account.account_id}`);
+  console.log(`Account: ${tuple.account_email || tuple.account_id}`);
+  console.log(`Real login workspace id: ${meta.login_workspace_id || tuple.account_id}`);
   console.log("Visible org hints in this login snapshot:");
   payload.forEach((workspace, index) => {
     const marks = [workspace.is_default ? "default" : ""].filter(Boolean).join(", ");
@@ -1906,26 +2066,11 @@ async function runWorkspaceDetailPage(tupleId) {
 }
 
 function buildManageChoices(state) {
-  const accounts = summarizeAccounts(state);
-  const choices = [];
-
-  for (const account of accounts) {
-    choices.push({
-      name: `heading:${account.account_id}`,
-      role: "heading",
-      message: account.account_email || account.account_id,
-      hint: `${account.account_name || "unknown name"} | ${account.account_id}`,
-    });
-
-    const tuples = getAllTuples(state).filter((tuple) => tuple.account_id === account.account_id);
-    for (const tuple of tuples) {
-      choices.push({
-        name: tuple.tuple_id,
-        message: `  ${tuple.alias}`,
-        hint: `${formatTupleWorkspaceSummary(tuple)}${tuple.tuple_id === state.active_tuple_id ? " | active" : ""}`,
-      });
-    }
-  }
+  const choices = getAllTuples(state).map((tuple) => ({
+    name: tuple.tuple_id,
+    message: tuple.alias,
+    hint: `${tuple.account_email || "(unknown email)"} | ${formatTupleWorkspaceSummary(tuple)}${tuple.tuple_id === state.active_tuple_id ? " | active" : ""}`,
+  }));
 
   choices.push({
     name: "__back__",
@@ -2040,7 +2185,7 @@ async function runAccountWorkspacesPage(accountId) {
     }
 
     const tuples = getAllTuples(state).filter((tuple) => tuple.account_id === accountId);
-    const meta = latestMetaForAccount(accountId);
+    const meta = latestMetaForTuple(tuples[0]);
 
     const choice = await selectChoice({
       title: "Account Workspaces",
@@ -2312,7 +2457,7 @@ Usage:
   codex_m login [--import-current]
   codex_m logout [<tuple-id>] [--force]
   codex_m list [--json]
-  codex_m workspaces [--account-id <id>] [--json]
+  codex_m workspaces [--account-id <id>] [--tuple-id <tuple-id>] [--json]
   codex_m capture [--workspace-id <id>] [--alias <manual-name>] [--activate|--no-activate] [--force]
   codex_m import-current [--workspace-id <id>] [--alias <manual-name>] [--activate|--no-activate] [--force]
   codex_m add-workspace
@@ -2325,9 +2470,9 @@ Notes:
   - Running plain 'codex_m' opens a simple Home page with Login, Manage, and Quit.
   - In Manage, Enter applies the selected real login snapshot and Tab opens Rename/Logout.
   - Workspace display names are always manual. Official titles are metadata only.
-  - Use 'codex_m workspaces' to inspect visible organization ids from a login token. They are informational hints only.
+  - Use 'codex_m workspaces' to inspect visible organization ids from a saved login snapshot. They are informational hints only.
   - Codex enforces the real login workspace via the token's 'chatgpt_account_id', not via organizations[].id.
-  - codex_m automatically compacts duplicate saved items that share the same real login workspace id.
+  - codex_m preserves distinct (email, real login workspace) snapshots and only compacts exact duplicates.
   - 'add-workspace' is disabled because codex_m can only save a real login snapshot returned by Codex.
   - 'logout' removes only the selected saved workspace tuple.
   - --force allows activation/deletion even when another Codex CLI process is running.

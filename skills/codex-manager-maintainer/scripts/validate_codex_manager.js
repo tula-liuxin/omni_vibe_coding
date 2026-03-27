@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 
 function resolveManagerHome() {
   if (process.env.CODEX_MANAGER_HOME) {
@@ -90,6 +91,48 @@ function pathExists(filePath) {
   }
 }
 
+function normalizeAccountEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function createSnapshotStorageKey(loginWorkspaceId, accountEmail) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        login_workspace_id: String(loginWorkspaceId || "").trim(),
+        account_email: normalizeAccountEmail(accountEmail),
+      }),
+    )
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function getTupleLoginWorkspaceId(tuple) {
+  return tuple?.login_workspace_id || tuple?.account_id || null;
+}
+
+function getTupleAuthStorageKey(tuple) {
+  if (tuple?.auth_storage_key) {
+    return tuple.auth_storage_key;
+  }
+  const loginWorkspaceId = getTupleLoginWorkspaceId(tuple);
+  if (!loginWorkspaceId) {
+    return tuple?.account_id || null;
+  }
+  return createSnapshotStorageKey(loginWorkspaceId, tuple?.account_email || "");
+}
+
+function getTupleIdentityKey(tuple) {
+  const loginWorkspaceId = getTupleLoginWorkspaceId(tuple);
+  if (!loginWorkspaceId) {
+    return null;
+  }
+  return JSON.stringify({
+    login_workspace_id: loginWorkspaceId,
+    account_email: normalizeAccountEmail(tuple?.account_email || ""),
+  });
+}
+
 const jsonMode = process.argv.includes("--json");
 const managerHome = resolveManagerHome();
 const officialHome = resolveOfficialHome();
@@ -145,6 +188,7 @@ if (state && state.active_tuple_id && !state.tuples?.[state.active_tuple_id]) {
 }
 
 if (state && state.tuples && typeof state.tuples === "object") {
+  const tuplesByIdentity = new Map();
   for (const tuple of Object.values(state.tuples)) {
     if (!tuple || typeof tuple !== "object") {
       issues.push("State contains a non-object tuple entry.");
@@ -154,23 +198,52 @@ if (state && state.tuples && typeof state.tuples === "object") {
       issues.push(`Tuple is missing account_id: ${tuple.tuple_id || "<unknown>"}`);
       continue;
     }
-    const authCopyPath = path.join(managerHome, "accounts", tuple.account_id, "auth.json");
-    if (!pathExists(authCopyPath)) {
+    const identityKey = getTupleIdentityKey(tuple);
+    if (identityKey) {
+      const existing = tuplesByIdentity.get(identityKey) || [];
+      existing.push(tuple.tuple_id || "<unknown>");
+      tuplesByIdentity.set(identityKey, existing);
+    }
+
+    const authStorageKey = getTupleAuthStorageKey(tuple);
+    const authCopyPath = path.join(managerHome, "accounts", authStorageKey, "auth.json");
+    const legacyAuthCopyPath = path.join(managerHome, "accounts", tuple.account_id, "auth.json");
+    const resolvedAuthCopyPath = pathExists(authCopyPath)
+      ? authCopyPath
+      : pathExists(legacyAuthCopyPath)
+        ? legacyAuthCopyPath
+        : authCopyPath;
+
+    if (!pathExists(resolvedAuthCopyPath)) {
       issues.push(`Missing saved auth copy for ${tuple.tuple_id}: ${authCopyPath}`);
       continue;
     }
+    if (resolvedAuthCopyPath !== authCopyPath) {
+      warnings.push(
+        `Tuple ${tuple.tuple_id} still uses legacy saved auth path and will be migrated on next codex_m run: ${legacyAuthCopyPath}`,
+      );
+    }
     try {
-      const authCopy = readJson(authCopyPath);
+      const authCopy = readJson(resolvedAuthCopyPath);
       const accountId = authCopy?.tokens?.account_id || null;
       if (!accountId) {
-        issues.push(`Saved auth copy missing tokens.account_id: ${authCopyPath}`);
+        issues.push(`Saved auth copy missing tokens.account_id: ${resolvedAuthCopyPath}`);
       } else if (tuple.login_workspace_id && tuple.login_workspace_id !== accountId) {
         issues.push(
           `Saved auth copy account id does not match tuple login identity for ${tuple.tuple_id}`,
         );
       }
     } catch (error) {
-      issues.push(`Invalid saved auth copy JSON: ${authCopyPath} (${error.message})`);
+      issues.push(`Invalid saved auth copy JSON: ${resolvedAuthCopyPath} (${error.message})`);
+    }
+  }
+
+  for (const [identityKey, tupleIds] of tuplesByIdentity.entries()) {
+    if (tupleIds.length > 1) {
+      const parsed = JSON.parse(identityKey);
+      issues.push(
+        `Duplicate saved snapshot identity (${parsed.account_email || "(unknown email)"} | ${parsed.login_workspace_id}): ${tupleIds.join(", ")}`,
+      );
     }
   }
 }

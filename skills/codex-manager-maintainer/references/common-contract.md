@@ -17,6 +17,7 @@
 
 - A saved item represents one real login snapshot.
 - The real identity is the login token's `chatgpt_account_id`.
+- Saved snapshot storage must preserve distinct `(account_email, chatgpt_account_id)` pairs when the email differs.
 - Visible organizations in the token are hints only.
 - Do not create multiple saved switch targets from a single token just because multiple visible orgs exist.
 
@@ -33,5 +34,5 @@
 ## Upgrade Invariants
 
 - Prefer repair or migration over destructive reinstall.
-- Compact duplicate saved items that share one real login identity.
+- Compact only exact duplicate saved snapshots for the same `(account_email, chatgpt_account_id)` pair.
 - Keep the main UX stable even if a platform-specific runtime is replaced.

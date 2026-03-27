@@ -3,6 +3,7 @@
 ## Real Identity Rules
 
 - Treat `chatgpt_account_id` as the real login workspace/account identity.
+- Save login snapshots by `(account_email, chatgpt_account_id)` when email is available, so different emails on the same real workspace stay separate.
 - Treat `organizations[].id` as informational only.
 - Validate switching behavior against the real login identity, not against display names or visible org ids.
 
@@ -27,12 +28,13 @@
 ## Logout
 
 - Logout removes the saved snapshot entry.
-- If it was the last saved snapshot for that login identity, remove the saved auth copy for that identity.
+- If it was the last saved snapshot for that saved `(account_email, chatgpt_account_id)` pair, remove the saved auth copy for that pair.
 - If it was the active and only remaining snapshot, official `auth.json` may be cleared and the managed workspace restriction removed.
 - Shared Codex sessions/history/config should remain.
 
 ## Duplicate Compaction
 
-- If multiple saved entries share one real login identity, compact them into one saved snapshot.
+- If multiple saved entries share one saved `(account_email, chatgpt_account_id)` identity, compact them into one saved snapshot.
+- Different emails on the same real login workspace must remain as separate saved snapshots.
 - Keep the most recent or active item as the canonical entry.
 - Preserve the manual display name when possible.
