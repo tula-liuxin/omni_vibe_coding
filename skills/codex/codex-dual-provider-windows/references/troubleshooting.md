@@ -20,7 +20,8 @@ Expected:
 - `codex3` reports your third-party provider.
 - `codex3_m` reports no obvious issues, or only warnings you understand.
 - The mirrored third-party `config.toml` under `%userprofile%\\.codex-apikey` contains the tutorial-required provider block.
-- `codex3` reuses the shared runtime home (default `%userprofile%\\.codex`) without rewriting official `auth.json`.
+- `codex3` uses the third-party home under `%userprofile%\\.codex-apikey`.
+- `codex3_m use-codex3 --force` is the thing that temporarily bridges plain `codex` into the third-party lane.
 
 ## Tutorial Mapping Rule
 
@@ -29,7 +30,8 @@ If the provider tutorial shows examples under `%userprofile%\\.codex\\config.tom
 - keep those exact provider values,
 - keep third-party auth under `%userprofile%\\.codex-apikey\\auth.json`,
 - mirror the provider block under `%userprofile%\\.codex-apikey\\config.toml`,
-- run `codex3` against the shared runtime home such as `%userprofile%\\.codex`,
+- run `codex3` against that third-party home,
+- use the manager quick action only when you want plain `codex` to follow the third-party lane,
 - and leave official `~\\.codex\\auth.json` untouched.
 
 ## Symptom: `expected value at line 1 column 1`
@@ -95,7 +97,7 @@ Write-Output $env:CODEX_HOME
 
 Expected:
 
-- `codex3` still works while reusing the shared runtime home.
+- `codex3` still works against the third-party home.
 - After the command exits, `CODEX_HOME` in the parent PowerShell session is empty or unchanged from its previous value.
 
 ## Symptom: `codex3` uses the official API key or ignores the saved third-party profile
@@ -103,7 +105,7 @@ Expected:
 Likely cause:
 
 - The parent shell exports `OPENAI_API_KEY`.
-- An older wrapper is still installed and does not clear that variable or inject the command-scoped provider env var before launching the child codex process.
+- An older wrapper is still installed and does not clear that variable before launching the child codex process.
 
 Fix:
 
@@ -116,7 +118,27 @@ powershell -ExecutionPolicy Bypass -File scripts/install_windows.ps1
 2. Verify the wrapper contains the isolation restore logic:
 
 ```powershell
-Select-String -Path "$env:APPDATA\npm\codex3.ps1" -Pattern "sharedCodexHome","providerEnvKeyName","previousOpenAiApiKey","Remove-Item Env:OPENAI_API_KEY"
+Select-String -Path "$env:APPDATA\npm\codex3.ps1" -Pattern "previousCodexHome","previousOpenAiApiKey","Remove-Item Env:OPENAI_API_KEY"
+```
+
+## Symptom: `codex3` returns `Failed to parse request body`
+
+Likely cause:
+
+- The wrapper was changed to an experimental shared-home or env-key auth route that your provider gateway does not fully support.
+
+Fix:
+
+1. Reinstall the stable wrapper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_codex3_wrapper.ps1 -ForceRewriteConfig
+```
+
+2. Verify the third-party config uses file-backed auth again:
+
+```powershell
+Select-String -Path "$HOME\\.codex-apikey\\config.toml" -Pattern "requires_openai_auth = true"
 ```
 
 3. Re-activate the desired profile from `codex3_m`.

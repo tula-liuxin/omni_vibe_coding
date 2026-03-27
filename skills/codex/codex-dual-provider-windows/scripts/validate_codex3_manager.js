@@ -41,17 +41,17 @@ function normalizeProfile(profile, profileId) {
   };
 }
 
-function normalizeEnvToken(value, fallback = "CODEX3") {
-  const normalized = String(value || "")
-    .trim()
-    .replace(/[^A-Za-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toUpperCase();
-  return normalized || fallback;
-}
-
-function getProviderEnvKey(commandName) {
-  return `${normalizeEnvToken(commandName)}_OPENAI_API_KEY`;
+function readPlainCodexModeState(managerHome) {
+  const filePath = path.join(path.dirname(managerHome), ".codex-manager", "plain-codex-mode.json");
+  if (!pathExists(filePath)) {
+    return null;
+  }
+  try {
+    const parsed = readJson(filePath);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 const jsonMode = process.argv.includes("--json");
@@ -65,6 +65,8 @@ const launcherDir =
 
 const issues = [];
 const warnings = [];
+const plainCodexModeState = readPlainCodexModeState(managerHome);
+const plainCodexMode = plainCodexModeState?.mode || "official";
 
 for (const runtimeFile of [
   path.join(managerHome, "index.mjs"),
@@ -186,8 +188,7 @@ if (!pathExists(thirdPartyConfigPath)) {
     `model_context_window = ${provider.model_context_window}`,
     `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
     `base_url = "${provider.base_url}"`,
-    `env_key = "${getProviderEnvKey(provider.command_name)}"`,
-    "requires_openai_auth = false",
+    "requires_openai_auth = true",
   ]) {
     if (!configText.includes(snippet)) {
       issues.push(`Third-party config is missing expected setting: ${snippet}`);
@@ -217,12 +218,6 @@ if (pathExists(wrapperPs1Path)) {
   const wrapperText = readText(wrapperPs1Path);
   if (!wrapperText.includes("previousCodexHome")) {
     warnings.push("Wrapper ps1 does not appear to restore CODEX_HOME.");
-  }
-  if (!wrapperText.includes("sharedCodexHome")) {
-    warnings.push("Wrapper ps1 does not appear to target a shared CODEX_HOME.");
-  }
-  if (!wrapperText.includes("providerEnvKeyName")) {
-    warnings.push("Wrapper ps1 does not appear to inject the provider env key.");
   }
   if (!wrapperText.includes("previousOpenAiApiKey")) {
     warnings.push("Wrapper ps1 does not appear to restore OPENAI_API_KEY.");
@@ -261,6 +256,12 @@ if (process.platform === "win32") {
   }
 }
 
+if (plainCodexMode === "third_party") {
+  warnings.push(
+    "Plain codex is currently bridged to the third-party provider. That bridge is separate from codex3's own isolated auth/config path.",
+  );
+}
+
 const payload = {
   ok: issues.length === 0,
   issues,
@@ -271,6 +272,7 @@ const payload = {
     thirdPartyHome: provider.third_party_home,
     sharedCodexHome: provider.shared_codex_home,
   },
+  plainCodexMode,
 };
 
 if (jsonMode) {

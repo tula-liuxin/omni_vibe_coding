@@ -489,7 +489,6 @@ function saveProfileAuth(profileId, authData) {
 }
 
 function writeThirdPartyConfig(provider) {
-  const providerEnvKey = getProviderEnvKey(provider.command_name);
   const text = [
     'cli_auth_credentials_store = "file"',
     `model_provider = "${provider.provider_name}"`,
@@ -505,9 +504,8 @@ function writeThirdPartyConfig(provider) {
     `[model_providers.${provider.provider_name}]`,
     `name = "${provider.provider_name}"`,
     `base_url = "${provider.base_url}"`,
-    `env_key = "${providerEnvKey}"`,
     'wire_api = "responses"',
-    'requires_openai_auth = false',
+    'requires_openai_auth = true',
     "",
     "[features]",
     "apps = false",
@@ -900,8 +898,7 @@ function doctorReport(state) {
       `model_context_window = ${provider.model_context_window}`,
       `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
       `base_url = "${provider.base_url}"`,
-      `env_key = "${getProviderEnvKey(provider.command_name)}"`,
-      "requires_openai_auth = false",
+      "requires_openai_auth = true",
     ];
     for (const snippet of requiredSnippets) {
       if (!configText.includes(snippet)) {
@@ -914,12 +911,6 @@ function doctorReport(state) {
     const wrapperText = readText(wrapperPs1Path);
     if (!wrapperText.includes("previousCodexHome")) {
       warnings.push("Wrapper ps1 does not appear to restore CODEX_HOME.");
-    }
-    if (!wrapperText.includes("sharedCodexHome")) {
-      warnings.push("Wrapper ps1 does not appear to target a shared CODEX_HOME.");
-    }
-    if (!wrapperText.includes("providerEnvKeyName")) {
-      warnings.push("Wrapper ps1 does not appear to inject the provider env key.");
     }
     if (!wrapperText.includes("previousOpenAiApiKey")) {
       warnings.push("Wrapper ps1 does not appear to restore OPENAI_API_KEY.");
