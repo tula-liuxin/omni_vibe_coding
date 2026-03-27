@@ -1,39 +1,73 @@
 # omni_vibe_coding
 
-这个仓库用来集中保存我自己常用但比较零散的东西，重点包括：
+这是一个通用资产库，用来集中维护可复用的 skill、tool、MCP 资产，以及它们的说明、安装入口和验证脚本。
 
-- `tools/`：脚本、打包工具、可直接部署的命令集合
-- `skills/`：给 Codex 用的 skill
-- `mcp/`：MCP 服务、配置、适配层和相关说明
-
-仓库目标不是“大而全”，而是把每一类东西的目录、部署方式、使用入口和文档关系整理清楚，方便以后持续追加。
+仓库的重点不是“只服务 Codex”，而是把不同类型资产的源码、部署入口和文档关系整理清楚。
+当前恰好已经落地了一批 Codex 相关资产，所以在各分类下使用 `codex/` 命名空间来隔离它们。
 
 ## 目录总览
 
-| 分类 | 目录 | 说明 | 索引文档 |
+| 分类 | 作用 | 当前组织方式 | 索引文档 |
 | --- | --- | --- | --- |
-| Tools | [`tools/`](./tools) | 可执行工具、脚本包、命令集合 | [`tools/README.md`](./tools/README.md) |
-| Skills | [`skills/`](./skills) | Codex 可直接使用的 skill | [`skills/README.md`](./skills/README.md) |
-| MCP | [`mcp/`](./mcp) | MCP 服务与配置占位/索引 | [`mcp/README.md`](./mcp/README.md) |
+| [`skills/`](./skills/) | AI/agent 可消费的 skill 源码 | `skills/<namespace>/<skill-name>/` | [`skills/README.md`](./skills/README.md) |
+| [`tools/`](./tools/) | 可直接部署或执行的工具 | `tools/<namespace>/<tool-name>/` | [`tools/README.md`](./tools/README.md) |
+| [`mcp/`](./mcp/) | MCP 服务、连接器、模板与相关说明 | `mcp/<family>/<entry-name>/` | [`mcp/README.md`](./mcp/README.md) |
 
-## 当前内容
+## 当前资产
 
-| 分类 | 名称 | 作用 | 部署 | 使用 | 文档 |
-| --- | --- | --- | --- | --- | --- |
-| Tools | [`codex-tmux-bundle`](./tools/codex-tmux-bundle) | 多账号 tmux + Codex 工作流打包 | 在目标 Linux/WSL 环境运行 `install.sh` | 用 `tmux-codex`、`codex-account-*`、`codex-agent-*` 管理多账号/多代理 | [`tools/codex-tmux-bundle/README.md`](./tools/codex-tmux-bundle/README.md) |
-| Skills | [`codex-manager-maintainer`](./skills/codex-manager-maintainer) | 安装、修复、升级、迁移 `codex_m`，并保持 `Login / Manage / Quit` 与真实登录快照模型一致 | 拷贝到 Codex 的 `~/.codex/skills/custom/` 下，或按需引用其中脚本/资源 | 在 Codex 中触发 `$codex-manager-maintainer` 来安装、修复或升级 `codex_m` | [`skills/README.md`](./skills/README.md) / [`skills/codex-manager-maintainer/SKILL.md`](./skills/codex-manager-maintainer/SKILL.md) |
-| MCP | 暂无实例 | 预留给未来的 MCP server / connector / adapter | 后续补充 | 后续补充 | [`mcp/README.md`](./mcp/README.md) |
+### Skills
 
-## 维护约定
+- [`skills/codex/codex-manager-maintainer/`](./skills/codex/codex-manager-maintainer/)
+  维护 `codex_m`，处理安装、修复、升级、迁移与官方身份切换
 
-- 每个工具、skill、MCP 都应该有明确的归类目录，不直接散落在仓库根目录。
-- 每个条目至少要能回答 3 件事：它是什么、怎么部署、怎么使用。
-- `tools/` 下的条目应自带自己的 README。
-- `skills/` 下的条目以 `SKILL.md` 为核心；如果需要给人看索引或部署说明，放在上一级分类 README，而不是往 skill 目录里堆额外用户文档。
-- 平台相关实现要隔离，避免把 Windows、Linux、macOS 的细节混在一起。
+### Tools
+
+- [`tools/codex/codex-tmux-bundle/`](./tools/codex/codex-tmux-bundle/)
+  提供多账号 tmux + Codex 工作流打包
+
+### MCP
+
+- 当前还没有正式纳入的 MCP 条目
+- 目录结构已经预留为：
+  - `mcp/servers/`
+  - `mcp/connectors/`
+  - `mcp/templates/`
+
+## 命名空间约定
+
+仓库按“分类 + 命名空间”组织，而不是把所有条目都直接堆在分类根目录：
+
+```text
+skills/<namespace>/<skill-name>/
+tools/<namespace>/<tool-name>/
+mcp/<family>/<entry-name>/
+```
+
+当前只有 `codex/` 命名空间已经落地。
+后续如果加入其它生态或平台的资产，应继续新增对应命名空间，而不是把新条目直接放在 `skills/` 或 `tools/` 根下。
+
+## Source 与 Deployment 的区别
+
+仓库保存的是源码和维护入口，不是机器本地部署结果。
+
+例如下面这些路径都属于“部署态”，不是仓库结构本身：
+
+- `~/.codex/skills/custom/...`
+- `~/.codex-manager/...`
+- `~/.codex3-manager/...`
+- `%APPDATA%\npm\codex_m.ps1`
+- `%APPDATA%\npm\codex3.ps1`
+
+如果为了排障修改了本机部署副本，应把变更回写到仓库源目录，再以仓库版本为准。
 
 ## 推荐查看顺序
 
-1. 先看根目录这个 README，知道仓库里有什么。
-2. 再按分类看 [`tools/README.md`](./tools/README.md)、[`skills/README.md`](./skills/README.md)、[`mcp/README.md`](./mcp/README.md)。
-3. 最后进入具体条目的 README 或 `SKILL.md` 看部署与使用细节。
+1. 先看根目录这个 `README.md`，理解仓库定位和整体结构。
+2. 再看分类索引：
+   - [`skills/README.md`](./skills/README.md)
+   - [`tools/README.md`](./tools/README.md)
+   - [`mcp/README.md`](./mcp/README.md)
+3. 如果是 Codex 相关资产，再进入对应命名空间：
+   - [`skills/codex/README.md`](./skills/codex/README.md)
+   - [`tools/codex/README.md`](./tools/codex/README.md)
+4. 最后进入具体条目的 `README.md` 或 `SKILL.md`。

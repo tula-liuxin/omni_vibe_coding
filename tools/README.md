@@ -1,31 +1,34 @@
 # Tools
 
-这个目录放可以直接部署或执行的工具包、脚本集合、命令封装。
+`tools/` 存放可直接部署、执行或复用的工具源码。
 
-## 当前工具
+与 `skills/` 不同，tool 主要面向人或脚本入口，不要求 `SKILL.md`，而是要求条目目录自带清晰的 `README.md`。
 
-### [`codex-tmux-bundle`](./codex-tmux-bundle)
+## 组织方式
 
-作用：
+采用命名空间目录：
 
-- 在 tmux 中管理多个 Codex 账号
-- 每个账号绑定自己的 `CODEX_HOME`
-- 支持账号窗口、子代理 window、子代理 pane
+```text
+tools/<namespace>/<tool-name>/
+```
 
-部署：
+当前已落地的命名空间：
 
-- 目标环境建议是 Ubuntu / WSL / 其他 Linux shell 环境
-- 进入 [`tools/codex-tmux-bundle`](./codex-tmux-bundle) 后运行 `install.sh`
-- 详细步骤见 [`tools/codex-tmux-bundle/README.md`](./codex-tmux-bundle/README.md)
+- [`tools/codex/`](./codex/)
+  放当前与 Codex 工作流直接相关的工具
 
-使用：
+## 当前命名空间
 
-- 主入口：`tmux-codex`
-- 账号相关：`codex-account-new`、`codex-account-limits`、`codex-account-logout`
-- 代理相关：`codex-agent-window`、`codex-agent-pane`
+- [`tools/codex/README.md`](./codex/README.md)
 
-## 添加新工具的约定
+## 约定
 
-- 一个工具一个独立目录
-- 工具目录内应有自己的 README
-- README 至少写清楚：用途、依赖、部署、使用、平台限制
+- 每个 tool 独立一个目录
+- 每个 tool 目录必须有自己的 `README.md`
+- `README.md` 至少写清楚：
+  - 它是什么
+  - 依赖什么
+  - 如何安装或部署
+  - 如何使用
+  - 有哪些平台限制
+- 如果一个 tool 同时支持多个平台，平台细节应拆开，不要混在一段安装说明里

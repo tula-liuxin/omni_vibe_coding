@@ -11,19 +11,23 @@
 
 - `~/.codex/auth.json` is the main local carrier of the active official login snapshot.
 - `codex_m` may also store per-snapshot auth copies in its own machine-local home.
-- Copying a saved snapshot into official `auth.json` is part of switching.
+- Copying a saved official profile into official `auth.json` is part of switching.
+- ChatGPT snapshots and official API key profiles are both file-backed.
+- Official API key profile copies live under `~/.codex-manager/official-api-keys/<profile-id>/auth.json`.
 
 ## `config.toml`
 
 - `forced_chatgpt_workspace_id` must be written at the TOML top level.
 - Writing that key under a nested table makes Codex ignore it.
 - Preserve unrelated config content.
+- When an official API key profile is active, `forced_chatgpt_workspace_id` must be removed.
 
 ## Import Current
 
 - `Use current signed-in Codex` means "capture the login already present in official `~/.codex/auth.json`".
 - It does not create a new backend workspace by itself.
 - It is useful for migration, repair, recovery, and syncing a login the user already completed outside `codex_m`.
+- `Import current official API key` means "capture the file-backed official API key already present in official `~/.codex/auth.json`".
 
 ## Logout
 
@@ -31,6 +35,7 @@
 - If it was the last saved snapshot for that saved `(account_email, chatgpt_account_id)` pair, remove the saved auth copy for that pair.
 - If it was the active and only remaining snapshot, official `auth.json` may be cleared and the managed workspace restriction removed.
 - Shared Codex sessions/history/config should remain.
+- Deleting an official API key profile removes only that saved API key profile and may fall back to another saved official profile if one exists.
 
 ## Duplicate Compaction
 
@@ -38,3 +43,10 @@
 - Different emails on the same real login workspace must remain as separate saved snapshots.
 - Keep the most recent or active item as the canonical entry.
 - Preserve the manual display name when possible.
+
+## State Shape
+
+- `schema_version = 3` adds `official_api_key_profiles` and `active_official_profile`.
+- `active_official_profile` is the source of truth for the currently applied official identity and may be:
+  - `{ kind = "chatgpt", id = <tuple-id> }`
+  - `{ kind = "official_api_key", id = <profile-id> }`

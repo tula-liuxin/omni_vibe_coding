@@ -10,12 +10,13 @@ import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import enquirer from "enquirer";
 
-const { Select, Input, Confirm } = enquirer;
+const { Select, Input, Confirm, Password } = enquirer;
 
-const VERSION = 2;
+const VERSION = 3;
 const MANAGER_HOME = path.join(os.homedir(), ".codex-manager");
 const STATE_PATH = path.join(MANAGER_HOME, "state.json");
 const ACCOUNTS_DIR = path.join(MANAGER_HOME, "accounts");
+const OFFICIAL_API_KEYS_DIR = path.join(MANAGER_HOME, "official-api-keys");
 const BACKUPS_DIR = path.join(MANAGER_HOME, "backups");
 const TMP_DIR = path.join(MANAGER_HOME, "tmp");
 
@@ -26,6 +27,9 @@ const OFFICIAL_CONFIG_PATH = path.join(OFFICIAL_HOME, "config.toml");
 const MANAGED_CONFIG_KEYS = {
   cli_auth_credentials_store: '"file"',
 };
+
+const PROFILE_KIND_CHATGPT = "chatgpt";
+const PROFILE_KIND_OFFICIAL_API_KEY = "official_api_key";
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -48,6 +52,7 @@ function readJson(filePath) {
 function loadState() {
   ensureDir(MANAGER_HOME);
   ensureDir(ACCOUNTS_DIR);
+  ensureDir(OFFICIAL_API_KEYS_DIR);
   ensureDir(BACKUPS_DIR);
   ensureDir(TMP_DIR);
 
@@ -56,6 +61,8 @@ function loadState() {
       schema_version: VERSION,
       active_tuple_id: null,
       tuples: {},
+      official_api_key_profiles: {},
+      active_official_profile: null,
     };
     writeJson(STATE_PATH, state);
     return state;
@@ -65,7 +72,7 @@ function loadState() {
   if (typeof state !== "object" || state === null) {
     throw new Error(`Invalid state file: ${STATE_PATH}`);
   }
-  if (![1, VERSION].includes(state.schema_version)) {
+  if (![1, 2, VERSION].includes(state.schema_version)) {
     throw new Error(
       `Unsupported state schema_version ${state.schema_version}; expected ${VERSION}.`,
     );
@@ -73,8 +80,14 @@ function loadState() {
   if (!state.tuples || typeof state.tuples !== "object") {
     state.tuples = {};
   }
+  if (!state.official_api_key_profiles || typeof state.official_api_key_profiles !== "object") {
+    state.official_api_key_profiles = {};
+  }
   if (!("active_tuple_id" in state)) {
     state.active_tuple_id = null;
+  }
+  if (!("active_official_profile" in state)) {
+    state.active_official_profile = null;
   }
   let changed = false;
   for (const tuple of Object.values(state.tuples)) {
@@ -93,10 +106,67 @@ function loadState() {
       }
     }
   }
+  for (const profile of Object.values(state.official_api_key_profiles)) {
+    if (profile && typeof profile === "object") {
+      if (!profile.profile_id) {
+        profile.profile_id = profile.auth_storage_key || profile.id || null;
+        changed = true;
+      }
+      if (!profile.auth_storage_key && profile.profile_id) {
+        profile.auth_storage_key = profile.profile_id;
+        changed = true;
+      }
+      if (!profile.alias || !profile.alias.trim()) {
+        profile.alias = "official-api-key";
+        changed = true;
+      }
+    }
+  }
   if (compactStateToSavedSnapshots(state)) {
     changed = true;
   }
   if (migrateSavedAuthCopies(state)) {
+    changed = true;
+  }
+  if (state.schema_version < VERSION && state.active_tuple_id) {
+    state.active_official_profile = {
+      kind: PROFILE_KIND_CHATGPT,
+      id: state.active_tuple_id,
+    };
+    changed = true;
+  }
+  if (
+    state.active_official_profile &&
+    (typeof state.active_official_profile !== "object" ||
+      !state.active_official_profile.kind ||
+      !state.active_official_profile.id)
+  ) {
+    state.active_official_profile = null;
+    changed = true;
+  }
+  if (
+    state.active_official_profile?.kind === PROFILE_KIND_CHATGPT &&
+    !state.tuples[state.active_official_profile.id]
+  ) {
+    state.active_official_profile = null;
+    changed = true;
+  }
+  if (
+    state.active_official_profile?.kind === PROFILE_KIND_OFFICIAL_API_KEY &&
+    !state.official_api_key_profiles[state.active_official_profile.id]
+  ) {
+    state.active_official_profile = null;
+    changed = true;
+  }
+  if (
+    !state.active_official_profile &&
+    state.active_tuple_id &&
+    state.tuples[state.active_tuple_id]
+  ) {
+    state.active_official_profile = {
+      kind: PROFILE_KIND_CHATGPT,
+      id: state.active_tuple_id,
+    };
     changed = true;
   }
   if (state.schema_version !== VERSION) {
@@ -142,8 +212,8 @@ function decodeJwtPayload(token) {
 }
 
 function extractAuthMeta(authData) {
-  if (!authData || authData.auth_mode !== "chatgpt") {
-    throw new Error("Only ChatGPT login is supported in codex_m v1.");
+  if (!authData?.tokens?.id_token) {
+    throw new Error("Expected a ChatGPT auth.json with tokens.id_token.");
   }
   const payload = decodeJwtPayload(authData?.tokens?.id_token);
   const auth = payload["https://api.openai.com/auth"] || {};
@@ -163,6 +233,42 @@ function extractAuthMeta(authData) {
     plan_type: auth.chatgpt_plan_type || "",
     login_workspace_id: auth.chatgpt_account_id,
     organizations,
+  };
+}
+
+function detectAuthKind(authData) {
+  if (authData?.tokens?.id_token) {
+    return PROFILE_KIND_CHATGPT;
+  }
+  if (
+    authData?.auth_mode === "apikey" ||
+    (typeof authData?.OPENAI_API_KEY === "string" && authData.OPENAI_API_KEY.trim())
+  ) {
+    return PROFILE_KIND_OFFICIAL_API_KEY;
+  }
+  throw new Error("Unsupported auth.json shape.");
+}
+
+function maskApiKey(apiKey) {
+  const value = String(apiKey || "").trim();
+  if (!value) {
+    return "(missing)";
+  }
+  if (value.length >= 12) {
+    return `${value.slice(0, 6)}...${value.slice(-4)}`;
+  }
+  return "(hidden)";
+}
+
+function extractOfficialApiKeyMeta(authData) {
+  const apiKey = String(authData?.OPENAI_API_KEY || "").trim();
+  if (!apiKey) {
+    throw new Error("Expected an API key auth.json with OPENAI_API_KEY.");
+  }
+  return {
+    auth_mode: "apikey",
+    masked_key: maskApiKey(apiKey),
+    key_hash: createHash("sha256").update(apiKey).digest("hex").slice(0, 32),
   };
 }
 
@@ -196,6 +302,14 @@ function authSnapshotDir(authStorageKey) {
 
 function savedAuthPath(authStorageKey) {
   return path.join(authSnapshotDir(authStorageKey), "auth.json");
+}
+
+function officialApiKeyProfileDir(profileId) {
+  return path.join(OFFICIAL_API_KEYS_DIR, profileId);
+}
+
+function officialApiKeyProfileAuthPath(profileId) {
+  return path.join(officialApiKeyProfileDir(profileId), "auth.json");
 }
 
 function getTupleIdentityKey(tuple) {
@@ -237,6 +351,189 @@ function getMetaAuthStorageKey(meta) {
     return meta?.account_id || null;
   }
   return createSnapshotStorageKey(loginWorkspaceId, meta?.account_email || "");
+}
+
+function createOfficialApiKeyStorageKey(apiKey) {
+  return createHash("sha256").update(String(apiKey || "").trim()).digest("hex").slice(0, 32);
+}
+
+function normalizeOfficialApiKeyProfile(profile, profileId = null) {
+  if (!profile || typeof profile !== "object") {
+    return null;
+  }
+  const id = profile.profile_id || profile.auth_storage_key || profileId;
+  if (!id) {
+    return null;
+  }
+  return {
+    ...profile,
+    profile_id: id,
+    auth_storage_key: profile.auth_storage_key || id,
+    alias: String(profile.alias || "official-api-key"),
+    created_at: profile.created_at || isoNow(),
+    last_used_at: profile.last_used_at || null,
+  };
+}
+
+function getOfficialApiKeyProfiles(state) {
+  return Object.entries(state.official_api_key_profiles || {})
+    .map(([profileId, profile]) => normalizeOfficialApiKeyProfile(profile, profileId))
+    .filter(Boolean)
+    .sort((left, right) => {
+      const leftTs = Date.parse(left.last_used_at || left.created_at || 0) || 0;
+      const rightTs = Date.parse(right.last_used_at || right.created_at || 0) || 0;
+      return rightTs - leftTs;
+    });
+}
+
+function getActiveOfficialProfile(state) {
+  const active = state?.active_official_profile;
+  if (!active?.kind || !active?.id) {
+    return null;
+  }
+  if (active.kind === PROFILE_KIND_CHATGPT) {
+    const tuple = state.tuples?.[active.id];
+    return tuple ? { kind: PROFILE_KIND_CHATGPT, id: tuple.tuple_id, record: tuple } : null;
+  }
+  if (active.kind === PROFILE_KIND_OFFICIAL_API_KEY) {
+    const profile = state.official_api_key_profiles?.[active.id];
+    return profile
+      ? {
+          kind: PROFILE_KIND_OFFICIAL_API_KEY,
+          id: active.id,
+          record: normalizeOfficialApiKeyProfile(profile, active.id),
+        }
+      : null;
+  }
+  return null;
+}
+
+function isTupleCurrentlyActive(state, tupleId) {
+  return (
+    state?.active_official_profile?.kind === PROFILE_KIND_CHATGPT &&
+    state.active_official_profile.id === tupleId
+  );
+}
+
+function isOfficialApiKeyProfileActive(state, profileId) {
+  return (
+    state?.active_official_profile?.kind === PROFILE_KIND_OFFICIAL_API_KEY &&
+    state.active_official_profile.id === profileId
+  );
+}
+
+function describeOfficialApiKeyProfile(state, profile) {
+  const authPath = officialApiKeyProfileAuthPath(profile.profile_id);
+  let maskedKey = "(missing)";
+  if (fs.existsSync(authPath)) {
+    try {
+      maskedKey = extractOfficialApiKeyMeta(readJson(authPath)).masked_key;
+    } catch {
+      maskedKey = "(invalid auth)";
+    }
+  }
+  const activeMark = isOfficialApiKeyProfileActive(state, profile.profile_id) ? " | active" : "";
+  return `${profile.alias} | ${maskedKey}${activeMark}`;
+}
+
+function requireOfficialApiKeyProfile(state, profileId) {
+  const profile = normalizeOfficialApiKeyProfile(
+    state.official_api_key_profiles?.[profileId],
+    profileId,
+  );
+  if (!profile) {
+    throw new Error(`Unknown official API key profile: ${profileId}`);
+  }
+  return profile;
+}
+
+function renameOfficialApiKeyProfileAlias(state, profileId, alias) {
+  const profile = requireOfficialApiKeyProfile(state, profileId);
+  profile.alias = alias;
+  state.official_api_key_profiles[profile.profile_id] = profile;
+  saveState(state);
+  return profile;
+}
+
+function formatProfileKindLabel(kind) {
+  if (!kind || kind === "(none)") {
+    return "(none)";
+  }
+  if (kind === PROFILE_KIND_CHATGPT) {
+    return "ChatGPT";
+  }
+  if (kind === PROFILE_KIND_OFFICIAL_API_KEY) {
+    return "Official API key";
+  }
+  return String(kind || "unknown");
+}
+
+function parseProfileKind(rawValue) {
+  const value = String(rawValue || "").trim().toLowerCase();
+  if (!value) {
+    throw new Error("Profile kind is required.");
+  }
+  if (value === "chatgpt") {
+    return PROFILE_KIND_CHATGPT;
+  }
+  if (
+    value === "official-api-key" ||
+    value === "official_api_key" ||
+    value === "api-key" ||
+    value === "apikey" ||
+    value === "official-apikey"
+  ) {
+    return PROFILE_KIND_OFFICIAL_API_KEY;
+  }
+  throw new Error(`Unknown profile kind: ${rawValue}`);
+}
+
+function resolveOfficialProfileRef(state, recordId, explicitKind = null) {
+  if (!recordId) {
+    throw new Error("Profile id is required.");
+  }
+
+  if (explicitKind === PROFILE_KIND_CHATGPT) {
+    const tuple = requireTuple(state, recordId);
+    return { kind: PROFILE_KIND_CHATGPT, id: tuple.tuple_id, record: tuple };
+  }
+
+  if (explicitKind === PROFILE_KIND_OFFICIAL_API_KEY) {
+    const profile = requireOfficialApiKeyProfile(state, recordId);
+    return { kind: PROFILE_KIND_OFFICIAL_API_KEY, id: profile.profile_id, record: profile };
+  }
+
+  const tuple = state.tuples?.[recordId] || null;
+  const profile = normalizeOfficialApiKeyProfile(
+    state.official_api_key_profiles?.[recordId],
+    recordId,
+  );
+
+  if (tuple && profile) {
+    throw new Error(
+      `Identifier ${recordId} exists in both ChatGPT tuples and official API key profiles. Re-run with --kind.`,
+    );
+  }
+  if (tuple) {
+    return { kind: PROFILE_KIND_CHATGPT, id: tuple.tuple_id, record: tuple };
+  }
+  if (profile) {
+    return { kind: PROFILE_KIND_OFFICIAL_API_KEY, id: profile.profile_id, record: profile };
+  }
+  throw new Error(`Unknown official profile: ${recordId}`);
+}
+
+function buildOfficialApiKeyAuthData(apiKey) {
+  const trimmed = String(apiKey || "").trim();
+  if (!trimmed) {
+    throw new Error("API key is required.");
+  }
+  return {
+    auth_mode: "apikey",
+    OPENAI_API_KEY: trimmed,
+    last_refresh: null,
+    tokens: null,
+  };
 }
 
 function canonicalTupleIdForSnapshot(authStorageKey, loginWorkspaceId) {
@@ -471,7 +768,9 @@ function shareSameRealLoginWorkspace(left, right) {
 }
 
 function maybeWarnSameRealWorkspace(state, tuple) {
-  const active = state?.active_tuple_id ? state.tuples[state.active_tuple_id] : null;
+  const active = getActiveOfficialProfile(state)?.kind === PROFILE_KIND_CHATGPT
+    ? getActiveOfficialProfile(state)?.record
+    : null;
   if (!active || active.tuple_id === tuple.tuple_id) {
     return;
   }
@@ -730,10 +1029,25 @@ function saveAccountAuth(accountId, authData) {
   writeJson(savedAuthPath(accountId), authData);
 }
 
+function saveOfficialApiKeyProfileAuth(profileId, authData) {
+  ensureDir(officialApiKeyProfileDir(profileId));
+  writeJson(officialApiKeyProfileAuthPath(profileId), authData);
+}
+
 function copySavedAuthToOfficial(accountId) {
   const source = savedAuthPath(accountId);
   if (!fs.existsSync(source)) {
     throw new Error(`Saved auth is missing for account ${accountId}`);
+  }
+  ensureDir(OFFICIAL_HOME);
+  backupFileIfExists(OFFICIAL_AUTH_PATH, "auth.json.bak");
+  fs.copyFileSync(source, OFFICIAL_AUTH_PATH);
+}
+
+function copyOfficialApiKeyProfileToOfficial(profileId) {
+  const source = officialApiKeyProfileAuthPath(profileId);
+  if (!fs.existsSync(source)) {
+    throw new Error(`Official API key auth is missing for profile ${profileId}`);
   }
   ensureDir(OFFICIAL_HOME);
   backupFileIfExists(OFFICIAL_AUTH_PATH, "auth.json.bak");
@@ -756,6 +1070,10 @@ async function activateTuple(state, tupleId, { silent = false, skipProcessCheck 
   applyManagedConfig(getTupleLoginWorkspaceId(tuple));
   tuple.last_used_at = isoNow();
   state.active_tuple_id = tupleId;
+  state.active_official_profile = {
+    kind: PROFILE_KIND_CHATGPT,
+    id: tupleId,
+  };
   saveState(state);
   if (!silent) {
     console.log(
@@ -767,6 +1085,53 @@ async function activateTuple(state, tupleId, { silent = false, skipProcessCheck 
       );
     }
   }
+}
+
+async function activateOfficialApiKeyProfile(
+  state,
+  profileId,
+  { silent = false, skipProcessCheck = false } = {},
+) {
+  const profile = normalizeOfficialApiKeyProfile(
+    state.official_api_key_profiles?.[profileId],
+    profileId,
+  );
+  if (!profile) {
+    throw new Error(`Unknown official API key profile: ${profileId}`);
+  }
+  if (!skipProcessCheck) {
+    assertNoRunningCodexProcesses();
+  }
+  copyOfficialApiKeyProfileToOfficial(profile.profile_id);
+  removeManagedWorkspaceRestriction();
+  profile.last_used_at = isoNow();
+  state.official_api_key_profiles[profile.profile_id] = profile;
+  state.active_tuple_id = null;
+  state.active_official_profile = {
+    kind: PROFILE_KIND_OFFICIAL_API_KEY,
+    id: profile.profile_id,
+  };
+  saveState(state);
+  if (!silent) {
+    console.log(`Applied official API key profile: ${describeOfficialApiKeyProfile(state, profile)}`);
+    if (skipProcessCheck) {
+      console.log(
+        "Heads-up: other running Codex windows may still use their old in-memory auth until you restart them."
+      );
+    }
+  }
+}
+
+async function activateOfficialProfileRef(
+  state,
+  profileRef,
+  { silent = false, skipProcessCheck = false } = {},
+) {
+  if (profileRef.kind === PROFILE_KIND_CHATGPT) {
+    await activateTuple(state, profileRef.id, { silent, skipProcessCheck });
+    return;
+  }
+  await activateOfficialApiKeyProfile(state, profileRef.id, { silent, skipProcessCheck });
 }
 
 function removeTupleAndMaybeAccount(state, tupleId) {
@@ -784,9 +1149,47 @@ function removeTupleAndMaybeAccount(state, tupleId) {
   }
 }
 
+function removeOfficialApiKeyProfile(state, profileId) {
+  const profile = normalizeOfficialApiKeyProfile(
+    state.official_api_key_profiles?.[profileId],
+    profileId,
+  );
+  if (!profile) {
+    throw new Error(`Unknown official API key profile: ${profileId}`);
+  }
+  delete state.official_api_key_profiles[profile.profile_id];
+  const dirPath = officialApiKeyProfileDir(profile.profile_id);
+  if (fs.existsSync(dirPath)) {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  }
+  return profile;
+}
+
+function getAllOfficialProfileRefs(state) {
+  const tupleRefs = getAllTuples(state).map((tuple) => ({
+    kind: PROFILE_KIND_CHATGPT,
+    id: tuple.tuple_id,
+    alias: tuple.alias,
+    created_at: tuple.created_at,
+    last_used_at: tuple.last_used_at || null,
+  }));
+  const apiKeyRefs = getOfficialApiKeyProfiles(state).map((profile) => ({
+    kind: PROFILE_KIND_OFFICIAL_API_KEY,
+    id: profile.profile_id,
+    alias: profile.alias,
+    created_at: profile.created_at,
+    last_used_at: profile.last_used_at || null,
+  }));
+  return [...tupleRefs, ...apiKeyRefs].sort((left, right) => {
+    const leftTs = Date.parse(left.last_used_at || left.created_at || 0) || 0;
+    const rightTs = Date.parse(right.last_used_at || right.created_at || 0) || 0;
+    return rightTs - leftTs;
+  });
+}
+
 async function deleteTuple(state, tupleId, { silent = false, skipProcessCheck = false } = {}) {
   const tuple = requireTuple(state, tupleId);
-  const isActive = tupleId === state.active_tuple_id;
+  const isActive = isTupleCurrentlyActive(state, tupleId);
   if (isActive && !skipProcessCheck) {
     assertNoRunningCodexProcesses();
   }
@@ -794,16 +1197,18 @@ async function deleteTuple(state, tupleId, { silent = false, skipProcessCheck = 
   removeTupleAndMaybeAccount(state, tupleId);
 
   if (isActive) {
-    const remaining = getAllTuples(state);
+    const remaining = getAllOfficialProfileRefs(state);
     if (remaining.length) {
       state.active_tuple_id = null;
+      state.active_official_profile = null;
       saveState(state);
-      await activateTuple(state, remaining[0].tuple_id, {
+      await activateOfficialProfileRef(state, remaining[0], {
         silent: true,
         skipProcessCheck,
       });
     } else {
       state.active_tuple_id = null;
+      state.active_official_profile = null;
       deleteOfficialAuthIfPresent();
       removeManagedWorkspaceRestriction();
       saveState(state);
@@ -817,12 +1222,72 @@ async function deleteTuple(state, tupleId, { silent = false, skipProcessCheck = 
   }
 }
 
+async function deleteOfficialApiKeyProfile(
+  state,
+  profileId,
+  { silent = false, skipProcessCheck = false } = {},
+) {
+  const profile = normalizeOfficialApiKeyProfile(
+    state.official_api_key_profiles?.[profileId],
+    profileId,
+  );
+  if (!profile) {
+    throw new Error(`Unknown official API key profile: ${profileId}`);
+  }
+  const isActive = isOfficialApiKeyProfileActive(state, profile.profile_id);
+  if (isActive && !skipProcessCheck) {
+    assertNoRunningCodexProcesses();
+  }
+
+  removeOfficialApiKeyProfile(state, profile.profile_id);
+
+  if (isActive) {
+    const remaining = getAllOfficialProfileRefs(state);
+    if (remaining.length) {
+      state.active_tuple_id = null;
+      state.active_official_profile = null;
+      saveState(state);
+      await activateOfficialProfileRef(state, remaining[0], {
+        silent: true,
+        skipProcessCheck,
+      });
+    } else {
+      state.active_tuple_id = null;
+      state.active_official_profile = null;
+      deleteOfficialAuthIfPresent();
+      removeManagedWorkspaceRestriction();
+      saveState(state);
+    }
+  } else {
+    saveState(state);
+  }
+
+  if (!silent) {
+    console.log(`Deleted official API key profile: ${profile.alias}`);
+  }
+}
+
 function getOfficialAuthAccountId() {
   if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
     return null;
   }
   try {
-    return extractAuthMeta(readJson(OFFICIAL_AUTH_PATH)).account_id || null;
+    const authData = readJson(OFFICIAL_AUTH_PATH);
+    if (detectAuthKind(authData) !== PROFILE_KIND_CHATGPT) {
+      return null;
+    }
+    return extractAuthMeta(authData).account_id || null;
+  } catch {
+    return null;
+  }
+}
+
+function getOfficialAuthKind() {
+  if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
+    return null;
+  }
+  try {
+    return detectAuthKind(readJson(OFFICIAL_AUTH_PATH));
   } catch {
     return null;
   }
@@ -830,17 +1295,54 @@ function getOfficialAuthAccountId() {
 
 function doctorReport(state) {
   const issues = [];
+  const warnings = [];
+  const launcherDir = path.join(process.env.APPDATA || "", "npm");
+  const activeProfile = getActiveOfficialProfile(state);
 
-  if (!fs.existsSync(path.join(process.env.APPDATA || "", "npm", "codex_m.cmd"))) {
+  if (!fs.existsSync(path.join(launcherDir, "codex_m.cmd"))) {
     issues.push("Launcher missing: %APPDATA%\\npm\\codex_m.cmd");
   }
-  if (!fs.existsSync(path.join(process.env.APPDATA || "", "npm", "codex_m.ps1"))) {
+  if (!fs.existsSync(path.join(launcherDir, "codex_m.ps1"))) {
     issues.push("Launcher missing: %APPDATA%\\npm\\codex_m.ps1");
   }
 
+  if (process.env.OPENAI_API_KEY && String(process.env.OPENAI_API_KEY).trim()) {
+    warnings.push(
+      "OPENAI_API_KEY is set in the current environment. That can override file-backed official profile switching.",
+    );
+  }
+
   for (const tuple of Object.values(state.tuples)) {
-    if (!fs.existsSync(savedAuthPath(getTupleAuthStorageKey(tuple)))) {
+    const authPath = savedAuthPath(getTupleAuthStorageKey(tuple));
+    if (!fs.existsSync(authPath)) {
       issues.push(`Saved auth missing for tuple ${tuple.tuple_id}`);
+      continue;
+    }
+    try {
+      if (detectAuthKind(readJson(authPath)) !== PROFILE_KIND_CHATGPT) {
+        issues.push(`Saved auth for tuple ${tuple.tuple_id} is not a ChatGPT auth snapshot.`);
+      }
+    } catch (error) {
+      issues.push(`Saved auth for tuple ${tuple.tuple_id} is invalid: ${error.message || error}`);
+    }
+  }
+
+  for (const profile of getOfficialApiKeyProfiles(state)) {
+    const authPath = officialApiKeyProfileAuthPath(profile.profile_id);
+    if (!fs.existsSync(authPath)) {
+      issues.push(`Saved auth missing for official API key profile ${profile.profile_id}`);
+      continue;
+    }
+    try {
+      if (detectAuthKind(readJson(authPath)) !== PROFILE_KIND_OFFICIAL_API_KEY) {
+        issues.push(
+          `Saved auth for official API key profile ${profile.profile_id} is not an API key auth snapshot.`,
+        );
+      }
+    } catch (error) {
+      issues.push(
+        `Saved auth for official API key profile ${profile.profile_id} is invalid: ${error.message || error}`,
+      );
     }
   }
 
@@ -880,34 +1382,59 @@ function doctorReport(state) {
         "Official config contains cli_auth_credentials_store outside the TOML top-level section, so Codex will ignore it.",
       );
     }
+    if (authStoreKeys.indexes.length === 0) {
+      issues.push("Official config does not contain top-level cli_auth_credentials_store.");
+    }
   } catch (error) {
     issues.push(String(error.message || error));
   }
 
-  if (state.active_tuple_id) {
-    const active = state.tuples[state.active_tuple_id];
-    if (!active) {
-      issues.push(`active_tuple_id points to a missing tuple: ${state.active_tuple_id}`);
-    } else {
-      const officialAccountId = getOfficialAuthAccountId();
-      const currentWorkspaceId = getCurrentWorkspaceRestriction(configText);
-      if (officialAccountId && officialAccountId !== active.account_id) {
-        issues.push(
-          `Official auth account (${officialAccountId}) does not match active tuple account (${active.account_id})`,
-        );
-      }
-      if (currentWorkspaceId && currentWorkspaceId !== getTupleLoginWorkspaceId(active)) {
-        issues.push(
-          `Official workspace restriction (${currentWorkspaceId}) does not match active tuple login workspace (${getTupleLoginWorkspaceId(active)})`,
-        );
-      }
-      if (!currentWorkspaceId) {
-        issues.push("Official config does not contain forced_chatgpt_workspace_id");
-      }
-    }
+  const officialAuthKind = getOfficialAuthKind();
+  const officialAccountId = getOfficialAuthAccountId();
+  const currentWorkspaceId = getCurrentWorkspaceRestriction(configText);
+
+  if (
+    state.active_tuple_id &&
+    activeProfile?.kind !== PROFILE_KIND_CHATGPT
+  ) {
+    issues.push("active_tuple_id should be null unless the active official profile is ChatGPT.");
   }
 
-  return issues;
+  if (activeProfile?.kind === PROFILE_KIND_CHATGPT) {
+    const activeTuple = activeProfile.record;
+    if (officialAuthKind !== PROFILE_KIND_CHATGPT) {
+      issues.push("Active official profile is ChatGPT, but ~/.codex/auth.json is not ChatGPT auth.");
+    }
+    if (officialAccountId && officialAccountId !== getTupleLoginWorkspaceId(activeTuple)) {
+      issues.push(
+        `Official auth account (${officialAccountId}) does not match active ChatGPT tuple login workspace (${getTupleLoginWorkspaceId(activeTuple)}).`,
+      );
+    }
+    if (!currentWorkspaceId) {
+      issues.push("Official config does not contain forced_chatgpt_workspace_id for the active ChatGPT tuple.");
+    } else if (currentWorkspaceId !== getTupleLoginWorkspaceId(activeTuple)) {
+      issues.push(
+        `Official workspace restriction (${currentWorkspaceId}) does not match active ChatGPT tuple login workspace (${getTupleLoginWorkspaceId(activeTuple)}).`,
+      );
+    }
+  } else if (activeProfile?.kind === PROFILE_KIND_OFFICIAL_API_KEY) {
+    if (officialAuthKind !== PROFILE_KIND_OFFICIAL_API_KEY) {
+      issues.push(
+        "Active official profile is an API key profile, but ~/.codex/auth.json is not API key auth.",
+      );
+    }
+    if (currentWorkspaceId) {
+      issues.push(
+        "Official API key profile is active, but forced_chatgpt_workspace_id is still present in ~/.codex/config.toml.",
+      );
+    }
+  } else if (currentWorkspaceId && officialAuthKind !== PROFILE_KIND_CHATGPT) {
+    warnings.push(
+      "forced_chatgpt_workspace_id is still present while no ChatGPT tuple is marked active.",
+    );
+  }
+
+  return { issues, warnings };
 }
 
 function latestMetaForTuple(tuple) {
@@ -915,22 +1442,46 @@ function latestMetaForTuple(tuple) {
 }
 
 function summarizeState(state) {
-  const tuples = getAllTuples(state);
+  const activeProfile = getActiveOfficialProfile(state);
   return {
-    tuple_count: tuples.length,
+    chatgpt_tuple_count: getAllTuples(state).length,
+    official_api_key_profile_count: getOfficialApiKeyProfiles(state).length,
     active_tuple_id: state.active_tuple_id,
-    tuples: tuples.map((tuple) => ({
+    active_official_profile: activeProfile
+      ? {
+          kind: activeProfile.kind,
+          id: activeProfile.id,
+          label: getActiveOfficialProfileLabel(state),
+        }
+      : null,
+    tuples: getAllTuples(state).map((tuple) => ({
       tuple_id: tuple.tuple_id,
       alias: tuple.alias,
       account_email: tuple.account_email,
       account_name: tuple.account_name,
       login_workspace_id: getTupleLoginWorkspaceId(tuple),
-      workspace_title: tuple.workspace_title,
-      workspace_id: tuple.workspace_id,
-      workspace_role: tuple.workspace_role,
-      is_active: tuple.tuple_id === state.active_tuple_id,
+      visible_workspace_count: Array.isArray(tuple.visible_workspaces)
+        ? tuple.visible_workspaces.length
+        : 0,
+      is_active: isTupleCurrentlyActive(state, tuple.tuple_id),
       created_at: tuple.created_at,
       last_used_at: tuple.last_used_at || null,
+    })),
+    official_api_key_profiles: getOfficialApiKeyProfiles(state).map((profile) => ({
+      profile_id: profile.profile_id,
+      alias: profile.alias,
+      masked_key: (() => {
+        try {
+          return extractOfficialApiKeyMeta(
+            readJson(officialApiKeyProfileAuthPath(profile.profile_id)),
+          ).masked_key;
+        } catch {
+          return "(invalid auth)";
+        }
+      })(),
+      is_active: isOfficialApiKeyProfileActive(state, profile.profile_id),
+      created_at: profile.created_at,
+      last_used_at: profile.last_used_at || null,
     })),
   };
 }
@@ -947,6 +1498,26 @@ function summarizeAccounts(state) {
     }
   }
   return Array.from(seen.values());
+}
+
+function getActiveOfficialProfileLabel(state) {
+  const active = getActiveOfficialProfile(state);
+  if (!active) {
+    return "(none)";
+  }
+  if (active.kind === PROFILE_KIND_CHATGPT) {
+    return `${active.record.alias} | ChatGPT | ${getTupleLoginWorkspaceId(active.record)}`;
+  }
+  const profile = active.record;
+  let maskedKey = "(missing)";
+  try {
+    maskedKey = extractOfficialApiKeyMeta(
+      readJson(officialApiKeyProfileAuthPath(profile.profile_id)),
+    ).masked_key;
+  } catch {
+    maskedKey = "(invalid auth)";
+  }
+  return `${profile.alias} | Official API key | ${maskedKey}`;
 }
 
 async function promptLine(question) {
@@ -988,44 +1559,68 @@ function printJson(value) {
 
 function printTupleSummary(state) {
   const tuples = getAllTuples(state);
+  const apiKeyProfiles = getOfficialApiKeyProfiles(state);
   const activeId = state.active_tuple_id;
   const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialConfigText());
   const officialAccountId = getOfficialAuthAccountId();
+  const officialAuthKind = getOfficialAuthKind();
 
+  console.log("Official ChatGPT snapshots:");
   if (!tuples.length) {
-    console.log("No saved tuples.");
-    return;
+    console.log("  (none)");
+  } else {
+    tuples.forEach((tuple, index) => {
+      const marks = [
+        tuple.tuple_id === activeId ? "*" : " ",
+        getTupleLoginWorkspaceId(tuple) === currentWorkspace ? "@" : " ",
+        tuple.account_id === officialAccountId ? "#" : " ",
+      ].join("");
+      console.log(
+        `${String(index + 1).padStart(2, " ")} ${marks} ${tuple.alias} | ${tuple.account_email} | ${formatTupleWorkspaceSummary(tuple)}`,
+      );
+      console.log(`   tuple_id: ${tuple.tuple_id}`);
+    });
   }
 
-  tuples.forEach((tuple, index) => {
-    const marks = [
-      tuple.tuple_id === activeId ? "*" : " ",
-      getTupleLoginWorkspaceId(tuple) === currentWorkspace ? "@" : " ",
-      tuple.account_id === officialAccountId ? "#" : " ",
-    ].join("");
-    console.log(
-      `${String(index + 1).padStart(2, " ")} ${marks} ${tuple.alias} | ${tuple.account_email} | ${formatTupleWorkspaceSummary(tuple)}`,
-    );
-    console.log(`   tuple_id: ${tuple.tuple_id}`);
-  });
   console.log("");
-  console.log("* active tuple in manager state");
-  console.log("@ real login workspace currently forced in ~/.codex/config.toml");
-  console.log("# account currently stored in ~/.codex/auth.json");
+  console.log("Official API key profiles:");
+  if (!apiKeyProfiles.length) {
+    console.log("  (none)");
+  } else {
+    apiKeyProfiles.forEach((profile, index) => {
+      const marks = [
+        isOfficialApiKeyProfileActive(state, profile.profile_id) ? "*" : " ",
+        " ",
+        officialAuthKind === PROFILE_KIND_OFFICIAL_API_KEY &&
+        isOfficialApiKeyProfileActive(state, profile.profile_id)
+          ? "#"
+          : " ",
+      ].join("");
+      console.log(
+        `${String(index + 1).padStart(2, " ")} ${marks} ${describeOfficialApiKeyProfile(state, profile)}`,
+      );
+      console.log(`   profile_id: ${profile.profile_id}`);
+    });
+  }
+
+  console.log("");
+  console.log("* active official profile in manager state");
+  console.log("@ forced ChatGPT login workspace currently set in ~/.codex/config.toml");
+  console.log("# auth currently stored in ~/.codex/auth.json");
 }
 
 function printOverview(state) {
   const tuples = getAllTuples(state);
-  const active = state.active_tuple_id ? state.tuples[state.active_tuple_id] : null;
   const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialConfigText());
   const processes = detectRunningCodexProcesses();
+  const officialAuthKind = getOfficialAuthKind();
 
   console.log("codex_m");
   console.log("");
-  console.log(`Saved tuples: ${tuples.length}`);
-  console.log(
-    `Active tuple: ${active ? `${active.alias} | ${getTupleLoginWorkspaceId(active)}` : "(none)"}`
-  );
+  console.log(`Saved ChatGPT snapshots: ${tuples.length}`);
+  console.log(`Saved official API keys: ${getOfficialApiKeyProfiles(state).length}`);
+  console.log(`Active official profile: ${getActiveOfficialProfileLabel(state)}`);
+  console.log(`Official auth kind: ${formatProfileKindLabel(officialAuthKind || "(none)")}`);
   console.log(`Forced login workspace: ${currentWorkspace || "(not set)"}`);
   console.log(
     `Running Codex CLI processes: ${processes.length ? formatProcessSummary(processes) : "none"}`,
@@ -1036,15 +1631,16 @@ function printOverview(state) {
   console.log("Commands:");
   console.log("  codex_m switch");
   console.log("  codex_m login");
+  console.log("  codex_m add-api-key");
   console.log("  codex_m logout");
-  console.log("  codex_m list");
+  console.log("  codex_m list [--kind chatgpt|official-api-key|all]");
   console.log("  codex_m workspaces [--account-id <id>] [--tuple-id <tuple-id>] [--json]");
   console.log("  codex_m capture");
-  console.log("  codex_m import-current");
+  console.log("  codex_m import-current [--kind chatgpt|official-api-key]");
   console.log("  codex_m add-workspace");
-  console.log("  codex_m activate <tuple-id> [--force]");
-  console.log("  codex_m rename <tuple-id> --alias <manual-name>");
-  console.log("  codex_m delete <tuple-id> [--force]");
+  console.log("  codex_m activate [--kind chatgpt|official-api-key] <id> [--force]");
+  console.log("  codex_m rename [--kind chatgpt|official-api-key] <id> --alias <manual-name>");
+  console.log("  codex_m delete [--kind chatgpt|official-api-key] <id> [--force]");
   console.log("  codex_m doctor");
 }
 
@@ -1092,7 +1688,7 @@ class ManageSelectPrompt extends Select {
         return this.alert();
       }
       this.state.submitted = true;
-      this.value = { mode: "menu", tupleId: choice.name };
+      this.value = { mode: "menu", recordId: choice.name };
       await this.close();
       this.emit("submit", this.value);
       return;
@@ -1104,14 +1700,14 @@ class ManageSelectPrompt extends Select {
 }
 
 function getWizardSummaryLines(state) {
-  const active = state.active_tuple_id ? state.tuples[state.active_tuple_id] : null;
   const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialConfigText());
   const processes = detectRunningCodexProcesses();
   return [
     "codex_m",
-    `Active: ${active ? `${active.alias} | ${getTupleLoginWorkspaceId(active)}` : "(none)"}`,
+    `Active: ${getActiveOfficialProfileLabel(state)}`,
     `Forced login workspace: ${currentWorkspace || "(not set)"}`,
-    `Saved tuples: ${getAllTuples(state).length}`,
+    `Saved ChatGPT snapshots: ${getAllTuples(state).length}`,
+    `Saved official API keys: ${getOfficialApiKeyProfiles(state).length}`,
     `Running Codex CLI: ${processes.length ? formatProcessSummary(processes) : "none"}`,
   ];
 }
@@ -1180,6 +1776,20 @@ async function promptInputPrompt(message, initial = "") {
   return trimmed || null;
 }
 
+async function promptSecretPrompt(message) {
+  const value = await runPrompt(
+    new Password({
+      name: "value",
+      message,
+    }),
+  );
+  if (value == null) {
+    return null;
+  }
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
 async function promptConfirmPrompt(message, initial = false) {
   const value = await runPrompt(
     new Confirm({
@@ -1197,6 +1807,10 @@ function parseOptionValue(args, index, flag) {
     throw new Error(`Missing value for ${flag}`);
   }
   return value;
+}
+
+function parseProfileKindOption(args, index, flag) {
+  return parseProfileKind(parseOptionValue(args, index, flag));
 }
 
 async function chooseWorkspace(meta, desiredWorkspaceId = null) {
@@ -1310,6 +1924,36 @@ async function promptManualWorkspaceName(providedAlias = null) {
   );
 }
 
+async function promptManualOfficialApiKeyName(providedAlias = null, suggestedAlias = null) {
+  if (providedAlias) {
+    return providedAlias.trim();
+  }
+  const answer = await promptLine(
+    `Enter the manual official API key profile name${suggestedAlias ? ` [${suggestedAlias}]` : ""}: `,
+  );
+  if (answer) {
+    return answer;
+  }
+  if (suggestedAlias) {
+    return suggestedAlias;
+  }
+  throw new Error("Official API key profile name is required.");
+}
+
+async function promptOfficialApiKeyValue(providedValue = null) {
+  if (providedValue) {
+    return String(providedValue).trim();
+  }
+  if (!process.stdin.isTTY) {
+    throw new Error("Adding an official API key requires an interactive terminal.");
+  }
+  const apiKey = await promptSecretPrompt("Official OPENAI_API_KEY:");
+  if (!apiKey) {
+    throw new Error("API key is required.");
+  }
+  return apiKey;
+}
+
 async function maybeConfirmForce(actionLabel) {
   const processes = detectRunningCodexProcesses();
   if (!processes.length) {
@@ -1342,6 +1986,23 @@ async function maybeActivateTuple(state, tupleId, options) {
 
   ensureForceIfNeeded(Boolean(options.force));
   await activateTuple(state, tupleId, { skipProcessCheck: Boolean(options.force) });
+}
+
+async function maybeActivateOfficialApiKeyProfile(state, profileId, options) {
+  const shouldActivate =
+    options.activateNow == null
+      ? await promptYesNo("Activate this official API key profile for normal codex now?", false)
+      : options.activateNow;
+
+  if (!shouldActivate) {
+    console.log("Saved without activation.");
+    return;
+  }
+
+  ensureForceIfNeeded(Boolean(options.force));
+  await activateOfficialApiKeyProfile(state, profileId, {
+    skipProcessCheck: Boolean(options.force),
+  });
 }
 
 async function interactiveChooseAccount(state, title = "Accounts") {
@@ -1519,6 +2180,24 @@ async function interactiveMaybeActivateTuple(state, tupleId) {
   return true;
 }
 
+async function interactiveMaybeActivateOfficialApiKeyProfile(state, profileId) {
+  const shouldActivate = await promptConfirmPrompt(
+    "Use this official API key profile for normal codex now?",
+    false,
+  );
+  if (!shouldActivate) {
+    return false;
+  }
+
+  const decision = await interactiveResolveForce("activation");
+  if (!decision.proceed) {
+    console.log("Activation canceled. Current auth was not changed.");
+    return false;
+  }
+  await activateOfficialApiKeyProfile(state, profileId, { skipProcessCheck: decision.force });
+  return true;
+}
+
 async function interactiveSwitchWorkspace(state) {
   const tuple = await interactiveChooseAnyTuple(state, "Apply Saved Tuple");
   if (!tuple) {
@@ -1599,13 +2278,143 @@ async function registerTupleFromAuthData(authData, options = {}) {
   await maybeActivateTuple(state, tuple.tuple_id, options);
 }
 
+async function interactiveRegisterOfficialApiKeyProfileFromAuthData(authData, options = {}) {
+  if (detectAuthKind(authData) !== PROFILE_KIND_OFFICIAL_API_KEY) {
+    throw new Error("Expected official API key auth.json data.");
+  }
+
+  const state = loadState();
+  const meta = extractOfficialApiKeyMeta(authData);
+  const profileId = createOfficialApiKeyStorageKey(authData.OPENAI_API_KEY);
+  const existing = normalizeOfficialApiKeyProfile(
+    state.official_api_key_profiles?.[profileId],
+    profileId,
+  );
+  const suggestedAlias = existing?.alias || `official-api-key-${getOfficialApiKeyProfiles(state).length + 1}`;
+  const alias = options.alias || (await promptManualOfficialApiKeyName(null, suggestedAlias));
+
+  saveOfficialApiKeyProfileAuth(profileId, buildOfficialApiKeyAuthData(authData.OPENAI_API_KEY));
+
+  const profile = {
+    profile_id: profileId,
+    auth_storage_key: profileId,
+    alias,
+    auth_mode: "apikey",
+    key_hash: meta.key_hash,
+    created_at: existing?.created_at || isoNow(),
+    last_used_at: existing?.last_used_at || null,
+  };
+
+  state.official_api_key_profiles[profileId] = profile;
+  saveState(state);
+  await interactiveMaybeActivateOfficialApiKeyProfile(state, profileId);
+  return true;
+}
+
+async function registerOfficialApiKeyProfileFromAuthData(authData, options = {}) {
+  if (detectAuthKind(authData) !== PROFILE_KIND_OFFICIAL_API_KEY) {
+    throw new Error("Expected official API key auth.json data.");
+  }
+
+  const state = loadState();
+  const meta = extractOfficialApiKeyMeta(authData);
+  const profileId = createOfficialApiKeyStorageKey(authData.OPENAI_API_KEY);
+  const existing = normalizeOfficialApiKeyProfile(
+    state.official_api_key_profiles?.[profileId],
+    profileId,
+  );
+  const suggestedAlias = existing?.alias || `official-api-key-${getOfficialApiKeyProfiles(state).length + 1}`;
+  const alias = await promptManualOfficialApiKeyName(options.alias || null, suggestedAlias);
+
+  saveOfficialApiKeyProfileAuth(profileId, buildOfficialApiKeyAuthData(authData.OPENAI_API_KEY));
+
+  const profile = {
+    profile_id: profileId,
+    auth_storage_key: profileId,
+    alias,
+    auth_mode: "apikey",
+    key_hash: meta.key_hash,
+    created_at: existing?.created_at || isoNow(),
+    last_used_at: existing?.last_used_at || null,
+  };
+
+  state.official_api_key_profiles[profileId] = profile;
+  saveState(state);
+
+  console.log(`Saved official API key profile: ${profile.alias}`);
+  console.log(`Profile id: ${profile.profile_id}`);
+  await maybeActivateOfficialApiKeyProfile(state, profile.profile_id, options);
+}
+
 async function handleList(state, args) {
-  const json = args.includes("--json");
+  let json = false;
+  let kind = null;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--json") {
+      json = true;
+    } else if (arg === "--kind") {
+      kind = parseProfileKindOption(args, index, arg);
+      index += 1;
+    } else {
+      throw new Error(`Unknown list option: ${arg}`);
+    }
+  }
+
+  const summary = summarizeState(state);
   if (json) {
-    printJson(summarizeState(state));
+    if (kind === PROFILE_KIND_CHATGPT) {
+      printJson({
+        active_official_profile: summary.active_official_profile,
+        chatgpt_tuple_count: summary.chatgpt_tuple_count,
+        tuples: summary.tuples,
+      });
+      return;
+    }
+    if (kind === PROFILE_KIND_OFFICIAL_API_KEY) {
+      printJson({
+        active_official_profile: summary.active_official_profile,
+        official_api_key_profile_count: summary.official_api_key_profile_count,
+        official_api_key_profiles: summary.official_api_key_profiles,
+      });
+      return;
+    }
+    printJson(summary);
     return;
   }
-  printTupleSummary(state);
+
+  if (!kind) {
+    printTupleSummary(state);
+    return;
+  }
+
+  if (kind === PROFILE_KIND_CHATGPT) {
+    console.log("Official ChatGPT snapshots:");
+    if (!summary.tuples.length) {
+      console.log("  (none)");
+      return;
+    }
+    summary.tuples.forEach((tuple, index) => {
+      console.log(
+        `${String(index + 1).padStart(2, " ")} ${tuple.is_active ? "*" : " "} ${tuple.alias} | ${tuple.account_email} | login ${tuple.login_workspace_id}`,
+      );
+      console.log(`   tuple_id: ${tuple.tuple_id}`);
+    });
+    return;
+  }
+
+  console.log("Official API key profiles:");
+  if (!summary.official_api_key_profiles.length) {
+    console.log("  (none)");
+    return;
+  }
+  summary.official_api_key_profiles.forEach((profile, index) => {
+    console.log(
+      `${String(index + 1).padStart(2, " ")} ${profile.is_active ? "*" : " "} ${profile.alias} | ${profile.masked_key}`,
+    );
+    console.log(`   profile_id: ${profile.profile_id}`);
+  });
 }
 
 async function handleWorkspaces(state, args) {
@@ -1758,6 +2567,7 @@ async function handleImportCurrent(args) {
   let alias = null;
   let activateNow = null;
   let force = false;
+  let kind = null;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -1773,6 +2583,9 @@ async function handleImportCurrent(args) {
       activateNow = false;
     } else if (arg === "--force") {
       force = true;
+    } else if (arg === "--kind") {
+      kind = parseProfileKindOption(args, index, arg);
+      index += 1;
     } else {
       throw new Error(`Unknown import-current option: ${arg}`);
     }
@@ -1782,8 +2595,59 @@ async function handleImportCurrent(args) {
     throw new Error(`Official auth.json is missing at ${OFFICIAL_AUTH_PATH}`);
   }
 
-  await registerTupleFromAuthData(readJson(OFFICIAL_AUTH_PATH), {
-    workspaceId,
+  const authData = readJson(OFFICIAL_AUTH_PATH);
+  const detectedKind = detectAuthKind(authData);
+  const effectiveKind = kind || detectedKind;
+  if (kind && kind !== detectedKind) {
+    throw new Error(
+      `Current official auth is ${formatProfileKindLabel(detectedKind)}, not ${formatProfileKindLabel(kind)}.`,
+    );
+  }
+
+  if (effectiveKind === PROFILE_KIND_CHATGPT) {
+    await registerTupleFromAuthData(authData, {
+      workspaceId,
+      alias,
+      activateNow,
+      force,
+    });
+    return;
+  }
+
+  if (workspaceId) {
+    throw new Error("--workspace-id only applies to ChatGPT snapshots.");
+  }
+
+  await registerOfficialApiKeyProfileFromAuthData(authData, {
+    alias,
+    activateNow,
+    force,
+  });
+}
+
+async function handleAddApiKey(args) {
+  let alias = null;
+  let activateNow = null;
+  let force = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--alias") {
+      alias = parseOptionValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--activate") {
+      activateNow = true;
+    } else if (arg === "--no-activate") {
+      activateNow = false;
+    } else if (arg === "--force") {
+      force = true;
+    } else {
+      throw new Error(`Unknown add-api-key option: ${arg}`);
+    }
+  }
+
+  const apiKey = await promptOfficialApiKeyValue();
+  await registerOfficialApiKeyProfileFromAuthData(buildOfficialApiKeyAuthData(apiKey), {
     alias,
     activateNow,
     force,
@@ -1799,101 +2663,164 @@ async function handleAddWorkspace(state, args) {
 }
 
 async function handleActivate(state, args) {
-  const tupleId = args[0];
-  if (!tupleId) {
-    throw new Error("Usage: codex_m activate <tuple-id> [--force]");
-  }
-
+  let recordId = null;
+  let kind = null;
   let force = false;
-  for (let index = 1; index < args.length; index += 1) {
+
+  for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--force") {
+    if (arg === "--kind") {
+      kind = parseProfileKindOption(args, index, arg);
+      index += 1;
+    } else if (arg === "--force") {
       force = true;
+    } else if (!recordId) {
+      recordId = arg;
     } else {
       throw new Error(`Unknown activate option: ${arg}`);
     }
   }
 
-  maybeWarnSameRealWorkspace(state, requireTuple(state, tupleId));
-  await activateTuple(state, tupleId, { skipProcessCheck: force });
+  if (!recordId) {
+    throw new Error(
+      "Usage: codex_m activate [--kind chatgpt|official-api-key] <id> [--force]",
+    );
+  }
+
+  const profileRef = resolveOfficialProfileRef(state, recordId, kind);
+  if (profileRef.kind === PROFILE_KIND_CHATGPT) {
+    maybeWarnSameRealWorkspace(state, profileRef.record);
+    await activateTuple(state, profileRef.id, { skipProcessCheck: force });
+    return;
+  }
+
+  await activateOfficialApiKeyProfile(state, profileRef.id, { skipProcessCheck: force });
 }
 
 async function handleRename(state, args) {
-  const tupleId = args[0];
-  if (!tupleId) {
-    throw new Error("Usage: codex_m rename <tuple-id> --alias <manual-name>");
-  }
-
+  let recordId = null;
+  let kind = null;
   let alias = null;
-  for (let index = 1; index < args.length; index += 1) {
+
+  for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--alias") {
+    if (arg === "--kind") {
+      kind = parseProfileKindOption(args, index, arg);
+      index += 1;
+    } else if (arg === "--alias") {
       alias = parseOptionValue(args, index, arg);
       index += 1;
+    } else if (!recordId) {
+      recordId = arg;
     } else {
       throw new Error(`Unknown rename option: ${arg}`);
     }
   }
 
-  if (!alias) {
-    alias = await promptManualWorkspaceName(null);
+  if (!recordId) {
+    throw new Error(
+      "Usage: codex_m rename [--kind chatgpt|official-api-key] <id> --alias <manual-name>",
+    );
   }
 
-  renameTupleAlias(state, tupleId, alias);
-  console.log(`Renamed tuple to: ${alias}`);
+  const profileRef = resolveOfficialProfileRef(state, recordId, kind);
+  if (!alias) {
+    alias =
+      profileRef.kind === PROFILE_KIND_CHATGPT
+        ? await promptManualWorkspaceName(null)
+        : await promptManualOfficialApiKeyName(null, profileRef.record.alias);
+  }
+
+  if (profileRef.kind === PROFILE_KIND_CHATGPT) {
+    renameTupleAlias(state, profileRef.id, alias);
+    console.log(`Renamed ChatGPT tuple to: ${alias}`);
+    return;
+  }
+
+  renameOfficialApiKeyProfileAlias(state, profileRef.id, alias);
+  console.log(`Renamed official API key profile to: ${alias}`);
 }
 
 async function handleDelete(state, args) {
-  const tupleId = args[0];
-  if (!tupleId) {
-    throw new Error("Usage: codex_m delete <tuple-id> [--force]");
-  }
-
+  let recordId = null;
+  let kind = null;
   let force = false;
-  for (let index = 1; index < args.length; index += 1) {
+
+  for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--force") {
+    if (arg === "--kind") {
+      kind = parseProfileKindOption(args, index, arg);
+      index += 1;
+    } else if (arg === "--force") {
       force = true;
+    } else if (!recordId) {
+      recordId = arg;
     } else {
       throw new Error(`Unknown delete option: ${arg}`);
     }
   }
 
-  const tuple = requireTuple(state, tupleId);
-  const confirmed = await promptYesNo(
-    `Delete '${tuple.alias}' (${tuple.account_email} | ${formatTupleWorkspaceSummary(tuple)})?`,
-    false,
-  );
+  if (!recordId) {
+    throw new Error(
+      "Usage: codex_m delete [--kind chatgpt|official-api-key] <id> [--force]",
+    );
+  }
+
+  const profileRef = resolveOfficialProfileRef(state, recordId, kind);
+  const confirmed =
+    profileRef.kind === PROFILE_KIND_CHATGPT
+      ? await promptYesNo(
+          `Delete '${profileRef.record.alias}' (${profileRef.record.account_email} | ${formatTupleWorkspaceSummary(profileRef.record)})?`,
+          false,
+        )
+      : await promptYesNo(
+          `Delete official API key profile '${profileRef.record.alias}'?`,
+          false,
+        );
   if (!confirmed) {
     console.log("Delete canceled.");
     return;
   }
 
-  await deleteTuple(state, tupleId, { skipProcessCheck: force });
+  if (profileRef.kind === PROFILE_KIND_CHATGPT) {
+    await deleteTuple(state, profileRef.id, { skipProcessCheck: force });
+    return;
+  }
+
+  await deleteOfficialApiKeyProfile(state, profileRef.id, { skipProcessCheck: force });
 }
 
 async function handleDoctor(state) {
-  const issues = doctorReport(state);
+  const { issues, warnings } = doctorReport(state);
   if (!issues.length) {
     console.log("No obvious issues found.");
+    warnings.forEach((warning, index) => {
+      console.log(`Warning ${index + 1}. ${warning}`);
+    });
     return;
   }
   issues.forEach((issue, index) => {
     console.log(`${index + 1}. ${issue}`);
+  });
+  warnings.forEach((warning, index) => {
+    console.log(`Warning ${index + 1}. ${warning}`);
   });
   process.exitCode = 1;
 }
 
 async function handleLogin(args) {
   if (args.includes("--help") || args.includes("-h")) {
-    console.log("Usage: codex_m login [--import-current]");
+    console.log("Usage: codex_m login [--import-current] [--with-api-key]");
     return;
   }
 
   let importCurrent = false;
+  let withApiKey = false;
   for (const arg of args) {
     if (arg === "--import-current") {
       importCurrent = true;
+    } else if (arg === "--with-api-key") {
+      withApiKey = true;
     } else {
       throw new Error(`Unknown login option: ${arg}`);
     }
@@ -1904,12 +2831,19 @@ async function handleLogin(args) {
     return;
   }
 
+  if (withApiKey) {
+    await handleAddApiKey([]);
+    return;
+  }
+
   if (process.stdin.isTTY) {
     await runLoginPage();
     return;
   }
 
-  throw new Error("Use 'codex_m login --import-current' or run 'codex_m login' in an interactive terminal.");
+  throw new Error(
+    "Use 'codex_m login --import-current', 'codex_m login --with-api-key', or run 'codex_m login' in an interactive terminal.",
+  );
 }
 
 async function handleLogout(state, args) {
@@ -2080,6 +3014,29 @@ function buildManageChoices(state) {
   return choices;
 }
 
+function buildOfficialApiKeyManageChoices(state) {
+  const choices = getOfficialApiKeyProfiles(state).map((profile) => ({
+    name: profile.profile_id,
+    message: profile.alias,
+    hint: (() => {
+      try {
+        return `${extractOfficialApiKeyMeta(
+          readJson(officialApiKeyProfileAuthPath(profile.profile_id)),
+        ).masked_key}${isOfficialApiKeyProfileActive(state, profile.profile_id) ? " | active" : ""}`;
+      } catch {
+        return `invalid auth${isOfficialApiKeyProfileActive(state, profile.profile_id) ? " | active" : ""}`;
+      }
+    })(),
+  }));
+
+  choices.push({
+    name: "__back__",
+    message: "Back",
+  });
+
+  return choices;
+}
+
 async function runManageActionsMenu(tupleId) {
   while (true) {
     const state = loadState();
@@ -2090,7 +3047,7 @@ async function runManageActionsMenu(tupleId) {
 
     const choice = await selectChoice({
       title: "Workspace Actions",
-      description: `${tuple.alias} | Tab from Manage opens this menu.`,
+      description: `${tuple.alias} | Tab from Account Manage opens this menu.`,
       state,
       choices: [
         {
@@ -2139,12 +3096,78 @@ async function runManageActionsMenu(tupleId) {
   }
 }
 
-async function runManagePage() {
+async function runOfficialApiKeyActionsMenu(profileId) {
+  while (true) {
+    const state = loadState();
+    const profile = normalizeOfficialApiKeyProfile(
+      state.official_api_key_profiles?.[profileId],
+      profileId,
+    );
+    if (!profile) {
+      return;
+    }
+
+    const choice = await selectChoice({
+      title: "API Key Actions",
+      description: `${profile.alias} | Tab from API Key Manage opens this menu.`,
+      state,
+      choices: [
+        {
+          name: "rename",
+          message: "Rename",
+          hint: profile.alias,
+        },
+        {
+          name: "delete",
+          message: "Delete",
+          hint: "remove only this saved official API key profile",
+        },
+        {
+          name: "back",
+          message: "Back",
+        },
+      ],
+    });
+
+    if (!choice || choice === "back") {
+      return;
+    }
+
+    if (choice === "rename") {
+      const alias =
+        (await promptInputPrompt("Official API key profile name:", profile.alias)) || profile.alias;
+      renameOfficialApiKeyProfileAlias(state, profileId, alias);
+      continue;
+    }
+
+    if (choice === "delete") {
+      const confirmed = await promptConfirmPrompt(
+        `Delete official API key profile '${profile.alias}'?`,
+        false,
+      );
+      if (!confirmed) {
+        continue;
+      }
+      const decision =
+        isOfficialApiKeyProfileActive(state, profileId)
+          ? await interactiveResolveForce("delete")
+          : { proceed: true, force: false };
+      if (!decision.proceed) {
+        console.log("Delete canceled. Current auth remains unchanged.");
+        continue;
+      }
+      await deleteOfficialApiKeyProfile(state, profileId, { skipProcessCheck: decision.force });
+      return;
+    }
+  }
+}
+
+async function runManageChatGptPage() {
   while (true) {
     const state = loadState();
     const selected = await selectChoice({
-      title: "Manage",
-      description: "Enter applies the selected saved tuple locally. Tab opens Rename or Logout.",
+      title: "Account Manage",
+      description: "Manage saved official ChatGPT snapshots. Enter applies locally. Tab opens Rename or Logout.",
       state,
       promptClass: ManageSelectPrompt,
       extraLines: ["Keys: Up/Down move | Enter apply locally | Tab more actions | Esc back"],
@@ -2156,12 +3179,12 @@ async function runManagePage() {
     }
 
     if (typeof selected === "object" && selected.mode === "menu") {
-      await runManageActionsMenu(selected.tupleId);
-      return;
+      await runManageActionsMenu(selected.recordId);
+      continue;
     }
 
     const tuple = requireTuple(loadState(), selected);
-    if (loadState().active_tuple_id === tuple.tuple_id) {
+    if (isTupleCurrentlyActive(loadState(), tuple.tuple_id)) {
       console.log(`Already using '${tuple.alias}'.`);
       continue;
     }
@@ -2172,6 +3195,45 @@ async function runManagePage() {
       continue;
     }
     await activateTuple(loadState(), tuple.tuple_id, { skipProcessCheck: decision.force });
+    return;
+  }
+}
+
+async function runManageOfficialApiKeysPage() {
+  while (true) {
+    const state = loadState();
+    const selected = await selectChoice({
+      title: "API Key Manage",
+      description: "Manage saved official API key profiles. Enter applies locally. Tab opens Rename or Delete.",
+      state,
+      promptClass: ManageSelectPrompt,
+      extraLines: ["Keys: Up/Down move | Enter apply locally | Tab more actions | Esc back"],
+      choices: buildOfficialApiKeyManageChoices(state),
+    });
+
+    if (!selected || selected === "__back__") {
+      return;
+    }
+
+    if (typeof selected === "object" && selected.mode === "menu") {
+      await runOfficialApiKeyActionsMenu(selected.recordId);
+      continue;
+    }
+
+    const profile = requireOfficialApiKeyProfile(loadState(), selected);
+    if (isOfficialApiKeyProfileActive(loadState(), profile.profile_id)) {
+      console.log(`Already using '${profile.alias}'.`);
+      continue;
+    }
+
+    const decision = await interactiveResolveForce("switch");
+    if (!decision.proceed) {
+      console.log("Switch canceled. Current auth remains unchanged.");
+      continue;
+    }
+    await activateOfficialApiKeyProfile(loadState(), profile.profile_id, {
+      skipProcessCheck: decision.force,
+    });
     return;
   }
 }
@@ -2242,18 +3304,23 @@ async function runOverviewPage() {
     const state = loadState();
     const choice = await selectChoice({
       title: "Home",
-      description: "Choose the thing you want to do most often.",
+      description: "Choose the official identity flow you want most often.",
       state,
       choices: [
         {
           name: "login",
           message: "Login",
-          hint: "start a real codex login, then enter the manual workspace name",
+          hint: "save either an official ChatGPT snapshot or an official API key profile",
         },
         {
-          name: "manage",
-          message: "Manage",
-          hint: "see accounts and workspaces; Enter applies locally; Tab opens Rename/Logout",
+          name: "account_manage",
+          message: "Account Manage",
+          hint: `${getAllTuples(state).length} saved ChatGPT snapshots`,
+        },
+        {
+          name: "api_key_manage",
+          message: "API Key Manage",
+          hint: `${getOfficialApiKeyProfiles(state).length} saved official API key profiles`,
         },
         {
           name: "quit",
@@ -2272,8 +3339,13 @@ async function runOverviewPage() {
       continue;
     }
 
-    if (choice === "manage") {
-      await runManagePage();
+    if (choice === "account_manage") {
+      await runManageChatGptPage();
+      continue;
+    }
+
+    if (choice === "api_key_manage") {
+      await runManageOfficialApiKeysPage();
       continue;
     }
   }
@@ -2293,22 +3365,36 @@ async function runAccountsPage() {
 async function runLoginPage() {
   while (true) {
     const state = loadState();
+    const officialAuthKind = getOfficialAuthKind();
     const choice = await selectChoice({
       title: "Login",
       description:
-        "Login saves a real Codex login snapshot. After success, you will enter the manual workspace name.",
+        "Choose whether to save an official ChatGPT login snapshot or an official API key profile.",
       state,
       initial: 0,
       choices: [
         {
           name: "fresh_login",
-          message: "Start login now",
+          message: "Start ChatGPT login now",
           hint: "runs codex login in a temporary CODEX_HOME, then asks for the workspace name",
         },
         {
-          name: "import_current",
+          name: "import_current_chatgpt",
           message: "Use current signed-in Codex",
           hint: "if ~/.codex is already logged in, save that login and ask for the workspace name",
+        },
+        {
+          name: "add_api_key",
+          message: "Add official API key now",
+          hint: "save a file-backed official OPENAI_API_KEY profile for normal codex",
+        },
+        {
+          name: "import_current_api_key",
+          message: "Import current official API key",
+          hint:
+            officialAuthKind === PROFILE_KIND_OFFICIAL_API_KEY
+              ? "current ~/.codex/auth.json is already in API key mode"
+              : "requires ~/.codex/auth.json to already be in API key mode",
         },
         {
           name: "back",
@@ -2352,11 +3438,38 @@ async function runLoginPage() {
       continue;
     }
 
-    if (choice === "import_current") {
+    if (choice === "import_current_chatgpt") {
       if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
         throw new Error(`Official auth.json is missing at ${OFFICIAL_AUTH_PATH}`);
       }
+      if (detectAuthKind(readJson(OFFICIAL_AUTH_PATH)) !== PROFILE_KIND_CHATGPT) {
+        throw new Error(
+          "Current official auth is not a ChatGPT login snapshot. Choose 'Import current official API key' instead.",
+        );
+      }
       await interactiveRegisterTupleFromAuthData(readJson(OFFICIAL_AUTH_PATH));
+      continue;
+    }
+
+    if (choice === "add_api_key") {
+      const apiKey = await promptOfficialApiKeyValue();
+      await interactiveRegisterOfficialApiKeyProfileFromAuthData(
+        buildOfficialApiKeyAuthData(apiKey),
+      );
+      continue;
+    }
+
+    if (choice === "import_current_api_key") {
+      if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
+        throw new Error(`Official auth.json is missing at ${OFFICIAL_AUTH_PATH}`);
+      }
+      const authData = readJson(OFFICIAL_AUTH_PATH);
+      if (detectAuthKind(authData) !== PROFILE_KIND_OFFICIAL_API_KEY) {
+        throw new Error(
+          "Current official auth is not in API key mode. Choose 'Use current signed-in Codex' for ChatGPT logins instead.",
+        );
+      }
+      await interactiveRegisterOfficialApiKeyProfileFromAuthData(authData);
     }
   }
 }
@@ -2364,20 +3477,30 @@ async function runLoginPage() {
 async function runDoctorPage() {
   while (true) {
     const state = loadState();
-    const issues = doctorReport(state);
+    const { issues, warnings } = doctorReport(state);
+    const lines = [
+      ...issues.map((issue, index) => ({
+        name: `issue_${index}`,
+        message: issue,
+        hint: "issue",
+      })),
+      ...warnings.map((warning, index) => ({
+        name: `warning_${index}`,
+        message: warning,
+        hint: "warning",
+      })),
+    ];
     const choice = await selectChoice({
       title: "Doctor",
       description: issues.length
-        ? `Found ${issues.length} issue(s). Enter to rerun or Esc to go back.`
-        : "No obvious issues found. Enter to rerun or Esc to go back.",
+        ? `Found ${issues.length} issue(s) and ${warnings.length} warning(s). Enter to rerun or Esc to go back.`
+        : warnings.length
+          ? `No blocking issues. Found ${warnings.length} warning(s). Enter to rerun or Esc to go back.`
+          : "No obvious issues found. Enter to rerun or Esc to go back.",
       state,
       choices: [
-        ...(issues.length
-          ? issues.map((issue, index) => ({
-              name: `issue_${index}`,
-              message: issue,
-              hint: "issue",
-            }))
+        ...(lines.length
+          ? lines
           : [
               {
                 name: "healthy",
@@ -2410,12 +3533,12 @@ async function runHelpPage() {
   const state = loadState();
   await selectChoice({
     title: "Help",
-    description: "Use Home first for the common flow: switch, login, logout. Esc returns.",
+    description: "Use Home first for the common flow: login, account manage, API key manage, and logout. Esc returns.",
     state,
     choices: [
       {
         name: "home",
-        message: "Home page gives the fastest path to switch, login, and logout",
+        message: "Home page gives direct Account Manage and API Key Manage entry points",
         hint: "recommended starting point",
       },
       {
@@ -2425,13 +3548,13 @@ async function runHelpPage() {
       },
       {
         name: "manual_name",
-        message: "Workspace display names are always entered manually",
-        hint: "official title is metadata only",
+        message: "ChatGPT workspace names and official API key profile names are always manual",
+        hint: "auto metadata is only a hint",
       },
       {
         name: "logout_scope",
-        message: "Logout removes only the selected saved workspace tuple",
-        hint: "not the whole account",
+        message: "Logout deletes one saved ChatGPT tuple; Delete removes one saved API key profile",
+        hint: "not the whole account or all keys",
       },
       {
         name: "back",
@@ -2448,33 +3571,36 @@ async function runInteractiveWizard() {
 function printHelp() {
   console.log(`codex_m
 
-Stable CLI manager for real Codex ChatGPT login snapshots on Windows.
+Stable CLI manager for official Codex identities on Windows.
 
 Usage:
   codex_m
   codex_m menu
   codex_m switch [<tuple-id>] [--force]
-  codex_m login [--import-current]
+  codex_m login [--import-current] [--with-api-key]
+  codex_m add-api-key [--alias <manual-name>] [--activate|--no-activate] [--force]
   codex_m logout [<tuple-id>] [--force]
-  codex_m list [--json]
+  codex_m list [--kind chatgpt|official-api-key|all] [--json]
   codex_m workspaces [--account-id <id>] [--tuple-id <tuple-id>] [--json]
   codex_m capture [--workspace-id <id>] [--alias <manual-name>] [--activate|--no-activate] [--force]
-  codex_m import-current [--workspace-id <id>] [--alias <manual-name>] [--activate|--no-activate] [--force]
+  codex_m import-current [--kind chatgpt|official-api-key] [--workspace-id <id>] [--alias <manual-name>] [--activate|--no-activate] [--force]
   codex_m add-workspace
-  codex_m activate <tuple-id> [--force]
-  codex_m rename <tuple-id> --alias <manual-name>
-  codex_m delete <tuple-id> [--force]
+  codex_m activate [--kind chatgpt|official-api-key] <id> [--force]
+  codex_m rename [--kind chatgpt|official-api-key] <id> --alias <manual-name>
+  codex_m delete [--kind chatgpt|official-api-key] <id> [--force]
   codex_m doctor
 
 Notes:
-  - Running plain 'codex_m' opens a simple Home page with Login, Manage, and Quit.
-  - In Manage, Enter applies the selected real login snapshot and Tab opens Rename/Logout.
-  - Workspace display names are always manual. Official titles are metadata only.
+  - Running plain 'codex_m' opens a simple Home page with Login, Account Manage, API Key Manage, and Quit.
+  - Account Manage applies saved official ChatGPT snapshots; API Key Manage applies saved official API key profiles.
+  - In Account Manage or API Key Manage, Enter applies the selected saved profile and Tab opens Rename/Delete or Logout actions for that section.
+  - ChatGPT workspace display names and official API key profile names are always manual.
   - Use 'codex_m workspaces' to inspect visible organization ids from a saved login snapshot. They are informational hints only.
   - Codex enforces the real login workspace via the token's 'chatgpt_account_id', not via organizations[].id.
   - codex_m preserves distinct (email, real login workspace) snapshots and only compacts exact duplicates.
+  - Official API key profiles are stored as file-backed auth.json snapshots under ~/.codex-manager/official-api-keys/.
   - 'add-workspace' is disabled because codex_m can only save a real login snapshot returned by Codex.
-  - 'logout' removes only the selected saved workspace tuple.
+  - 'logout' removes only the selected saved ChatGPT tuple.
   - --force allows activation/deletion even when another Codex CLI process is running.
 `);
 }
@@ -2519,6 +3645,11 @@ async function handleCommand(args) {
 
   if (command === "import-current") {
     await handleImportCurrent(rest);
+    return;
+  }
+
+  if (command === "add-api-key") {
+    await handleAddApiKey(rest);
     return;
   }
 

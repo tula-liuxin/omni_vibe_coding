@@ -34,21 +34,26 @@ description: Install, repair, upgrade, and extend codex_m as a machine-local Cod
    - tuple identity and compaction rules in runtime state
    - saved auth snapshot storage layout
    - activation/config behavior in official `auth.json` and `config.toml`
-8. If the active platform does not yet have a bundled installer/runtime, derive the implementation from the common contract plus the active platform reference, keep unrelated platform detail out of the explanation, and persist the new adapter cleanly under `scripts/`, `assets/`, and `references/`.
-9. Validate behavior, not just file presence.
+8. When the task involves official API keys, treat them as a separate official profile type:
+   - ChatGPT snapshots stay under `tuples`
+   - file-backed official API key profiles stay under `official_api_key_profiles`
+   - `active_official_profile` is the source of truth for what normal `codex` should use
+9. If the active platform does not yet have a bundled installer/runtime, derive the implementation from the common contract plus the active platform reference, keep unrelated platform detail out of the explanation, and persist the new adapter cleanly under `scripts/`, `assets/`, and `references/`.
+10. Validate behavior, not just file presence.
 
 ## Stable Contract
 
 Keep these behaviors stable unless the user explicitly asks to change them:
 
-- Home shows `Login`, `Manage`, `Quit`.
+- Home shows `Login`, `Account Manage`, `API Key Manage`, `Quit`.
 - `Login now` is the main login path.
 - `Use current signed-in Codex` is an advanced recovery/import path.
 - After login or import, prompt for a manual workspace name.
-- `Manage` lists only real saved login snapshots.
+- `Account Manage` lists only real saved ChatGPT login snapshots.
+- `API Key Manage` lists only saved official API key profiles.
 - Distinct `(account_email, chatgpt_account_id)` snapshots must remain separately saved and manageable when the email differs.
-- `Enter` switches to the selected snapshot.
-- `Tab` opens `Rename` and `Logout`.
+- `Enter` switches to the selected profile in the current manage section.
+- `Tab` opens section-appropriate actions such as `Rename`, `Logout`, or `Delete`.
 - `Logout` deletes the saved snapshot, not shared sessions/history/config.
 - Visible org ids from the token are informational hints only.
 - Real switching identity is keyed by `chatgpt_account_id`, not `organizations[].id`.
@@ -65,7 +70,7 @@ Keep these behaviors stable unless the user explicitly asks to change them:
 - `scripts/detect_environment.js`
   Use to inspect OS, shell, expected launcher paths, Codex paths, and whether `codex_m` already exists.
 - `scripts/validate_codex_manager.js`
-  Use to verify an installed `codex_m` footprint, catch auth/config placement problems, and detect duplicate saved snapshot identities.
+  Use to verify an installed `codex_m` footprint, catch auth/config placement problems, detect duplicate saved snapshot identities, and detect API-key-vs-workspace residue.
 - `scripts/install_windows.ps1`
   Use on Windows to install or update `codex_m` from bundled assets.
 - `assets/windows-runtime/`
