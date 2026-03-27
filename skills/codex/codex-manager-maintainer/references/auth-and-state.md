@@ -12,6 +12,7 @@
 - `~/.codex/auth.json` is the main local carrier of the active official login snapshot.
 - `codex_m` may also store per-snapshot auth copies in its own machine-local home.
 - Copying a saved official profile into official `auth.json` is part of switching.
+- Switching the login that plain `codex.exe` uses should happen by replacing this file-backed carrier, not by relocating the whole `CODEX_HOME`.
 - ChatGPT snapshots and official API key profiles are both file-backed.
 - Official API key profile copies live under `~/.codex-manager/official-api-keys/<profile-id>/auth.json`.
 
@@ -20,6 +21,7 @@
 - `forced_chatgpt_workspace_id` must be written at the TOML top level.
 - Writing that key under a nested table makes Codex ignore it.
 - Preserve unrelated config content.
+- When switching the login used by normal `codex.exe`, patch only the managed top-level keys and leave session/history/trust settings alone.
 - When an official API key profile is active, `forced_chatgpt_workspace_id` must be removed.
 - If plain `codex` is temporarily bridged to the third-party provider, record that mode separately so official doctor/validation can distinguish intentional drift from breakage.
 

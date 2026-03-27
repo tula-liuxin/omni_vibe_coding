@@ -1,6 +1,6 @@
 ---
 name: codex-manager-maintainer
-description: Install, repair, upgrade, and extend codex_m as a machine-local Codex login/workspace manager with a stable effect-first UX across environments. Use when Codex needs to create codex_m on a new computer, migrate an existing codex_m setup, fix launcher/auth/config bugs, compact fake or duplicate saved logins, or add platform-specific support while keeping Windows, macOS, and Linux implementation details isolated. Trigger for requests about codex_m installation, maintenance, upgrade, repair, portability, cross-platform support, login/workspace switching behavior, or codex_m skill-driven bootstrap on another machine.
+description: Install, repair, upgrade, and extend codex_m as a machine-local Codex login/workspace manager with a stable effect-first UX across environments. Use when Codex needs to create codex_m on a new computer, migrate an existing codex_m setup, fix launcher/auth/config bugs, compact fake or duplicate saved logins, switch the login/auth that normal `codex.exe` uses without disturbing shared sessions/settings, or add platform-specific support while keeping Windows, macOS, and Linux implementation details isolated. Trigger for requests about codex_m installation, maintenance, upgrade, repair, portability, cross-platform support, codex.exe login/workspace switching behavior, or codex_m skill-driven bootstrap on another machine.
 ---
 
 # Codex Manager Maintainer
@@ -12,6 +12,7 @@ description: Install, repair, upgrade, and extend codex_m as a machine-local Cod
 - Prefer effect parity over code parity.
 - Treat shared logic and user-facing behavior as the durable core.
 - Treat saved login snapshots as durable data with explicit identity rules, not as disposable cache.
+- Treat normal `codex.exe` login switching as an auth-layer operation over one shared `~/.codex` home, not as a whole-home swap.
 - If the active platform does not yet have bundled installer/runtime assets, build the missing platform adapter from the common contract instead of blocking on missing scaffolding.
 
 ## Workflow
@@ -34,12 +35,16 @@ description: Install, repair, upgrade, and extend codex_m as a machine-local Cod
    - tuple identity and compaction rules in runtime state
    - saved auth snapshot storage layout
    - activation/config behavior in official `auth.json` and `config.toml`
-8. When the task involves official API keys, treat them as a separate official profile type:
+8. When the task specifically involves switching the login that plain `codex.exe` should use, apply the saved official profile by updating the official auth/config carriers only:
+   - swap `~/.codex/auth.json`
+   - patch only the managed top-level keys in `~/.codex/config.toml`
+   - leave shared `~/.codex/sessions`, history, trust, skills, and other unrelated settings in place
+9. When the task involves official API keys, treat them as a separate official profile type:
    - ChatGPT snapshots stay under `tuples`
    - file-backed official API key profiles stay under `official_api_key_profiles`
    - `active_official_profile` is the source of truth for what normal `codex` should use
-9. If the active platform does not yet have a bundled installer/runtime, derive the implementation from the common contract plus the active platform reference, keep unrelated platform detail out of the explanation, and persist the new adapter cleanly under `scripts/`, `assets/`, and `references/`.
-10. Validate behavior, not just file presence.
+10. If the active platform does not yet have a bundled installer/runtime, derive the implementation from the common contract plus the active platform reference, keep unrelated platform detail out of the explanation, and persist the new adapter cleanly under `scripts/`, `assets/`, and `references/`.
+11. Validate behavior, not just file presence.
 
 ## Stable Contract
 
@@ -52,6 +57,7 @@ Keep these behaviors stable unless the user explicitly asks to change them:
 - `Account Manage` lists only real saved ChatGPT login snapshots.
 - `API Key Manage` lists only saved official API key profiles.
 - `Plain codex -> codex` restores plain `codex` back to the official `~/.codex` state without changing the launcher.
+- Switching the login that plain `codex.exe` uses must not relocate or replace the shared `~/.codex` session/history/settings home.
 - Distinct `(account_email, chatgpt_account_id)` snapshots must remain separately saved and manageable when the email differs.
 - `Enter` switches to the selected profile in the current manage section.
 - `Tab` opens section-appropriate actions such as `Rename`, `Logout`, or `Delete`.
@@ -88,5 +94,6 @@ Keep these behaviors stable unless the user explicitly asks to change them:
 - Do not delete shared Codex session/history state as part of normal logout or repair.
 - Do not assume launcher paths or shell wrappers are identical across platforms.
 - Do not overwrite unrelated `~/.codex/config.toml` content; only patch the managed keys.
+- Do not implement `codex.exe` login switching by swapping the whole `CODEX_HOME` or by moving session/history directories.
 - Do not require Ubuntu/macOS to mimic Windows launcher mechanics; preserve behavior, not file-layout symmetry.
 - If upstream Codex behavior appears to have changed, update the platform adapter and validation logic before changing the public contract.

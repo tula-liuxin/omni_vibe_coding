@@ -30,6 +30,7 @@
   - saved auth snapshots
   - official `~/.codex/auth.json`
   - managed auth/config restriction keys
+- Switching the login used by normal `codex.exe` should be modeled as changing those auth carriers only, while shared `~/.codex` sessions, history, trust, and skills stay put.
 - Do not wipe unrelated project trust, model settings, history, sessions, or skills.
 
 ## Upgrade Invariants

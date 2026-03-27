@@ -1,6 +1,6 @@
 ---
 name: codex-dual-provider-windows
-description: Configure and maintain a split Codex CLI setup on Windows where official codex remains unchanged, `codex3` keeps its own stable third-party auth/config home, and the managers can optionally bridge plain `codex` between official and third-party lanes. Use when users ask to separate official and third-party accounts, add or update codex3 login behavior, or troubleshoot provider routing/auth/config-encoding issues.
+description: Configure and maintain a split Codex CLI setup on Windows where official codex remains unchanged, `codex3` keeps its own stable third-party auth/config home, and the managers can optionally steer which login/auth plain `codex.exe` should use. Use when users ask to separate official and third-party accounts, add or update codex3 login behavior, switch the login used by `codex.exe`, or troubleshoot provider routing/auth/config-encoding issues.
 ---
 
 # Codex Dual Provider Windows
@@ -11,6 +11,7 @@ description: Configure and maintain a split Codex CLI setup on Windows where off
 - Create and maintain a dedicated third-party command (default `codex3`).
 - Create and maintain a dedicated third-party manager command `codex3_m`.
 - Keep third-party auth and provider metadata under a separate home for `codex3` itself.
+- Support explicit switching of the login used by plain `codex.exe` without replacing the `codex` launcher.
 - Expose a quick `Plain codex -> codex3` action from `codex3_m` that temporarily bridges plain `codex` to the active third-party profile without replacing the launcher.
 - When the user provides a provider tutorial, treat that tutorial as the source of truth for the third-party config shape and values.
 
@@ -31,7 +32,11 @@ description: Configure and maintain a split Codex CLI setup on Windows where off
 7. Verify separation:
    - `codex exec --skip-git-repo-check "hello"` should show `provider: openai`.
    - `<command> exec --skip-git-repo-check "hello"` should show third-party provider.
-8. If validation fails, follow `references/troubleshooting.md`.
+8. If the task is specifically about switching which login plain `codex.exe` should use, make that intent explicit:
+   - official-login switching belongs to `codex_m`
+   - temporary third-party bridging belongs to `codex3_m`
+   - neither path should imply deleting or relocating the shared official sessions/history tree
+9. If validation fails, follow `references/troubleshooting.md`.
 
 ## Deterministic Behavior
 
@@ -40,6 +45,7 @@ description: Configure and maintain a split Codex CLI setup on Windows where off
 - Remove inherited `OPENAI_API_KEY` during third-party child runs, then restore it after exit.
 - Force provider routing at runtime with `-c` overrides.
 - Keep `codex` untouched; only create/update `<command>.ps1` and `<command>.cmd`.
+- Keep `codex.exe` login switching separate from `codex3`'s own isolated home so the official and third-party lanes remain understandable.
 - Implement `<command> login` to write `auth.json` in the tutorial-compatible `OPENAI_API_KEY` file-backed shape.
 - Implement `<command> login status` as local-file check only (no remote dependency).
 - Write `auth.json`, `config.toml`, and wrapper scripts as UTF-8 without BOM.
@@ -76,6 +82,7 @@ If the tutorial changes, update the installed provider settings with `codex3_m p
 - Do not replace or modify the existing `codex` launcher.
 - Do not store third-party key in official `~\\.codex` path.
 - Do not let `codex3` or `codex3_m` rewrite official `~\\.codex/auth.json` or official manager state.
+- Do not describe `codex.exe` login switching as a full shared-home replacement when the actual intent is to swap auth locally.
 - Do not rewrite `codex3` into an experimental shared-home auth path unless the target provider has been verified to work with that route.
 - Do not silently ignore a user-supplied tutorial when its values differ from the current defaults; update the installer/runtime to match the tutorial instead.
 - If a key is exposed in chat or logs, rotate it and rerun `<command> login`.
