@@ -1,0 +1,8 @@
+{
+  "name": "codex3-manager-runtime",
+  "private": true,
+  "description": "Machine-local runtime for codex3_m",
+  "dependencies": {
+    "enquirer": "^2.4.1"
+  }
+}

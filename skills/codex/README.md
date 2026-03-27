@@ -21,6 +21,20 @@
 - [`scripts/validate_codex_manager.js`](./codex-manager-maintainer/scripts/validate_codex_manager.js)
 - [`scripts/install_windows.ps1`](./codex-manager-maintainer/scripts/install_windows.ps1)
 
+### [`codex-dual-provider-windows/`](./codex-dual-provider-windows/)
+
+用途：
+
+- 在 Windows 下隔离官方 `codex` 与第三方 `codex3`
+- 维护 `codex3_m`、wrapper、第三方 provider 配置与 API key profile
+
+入口与关键资源：
+
+- [`SKILL.md`](./codex-dual-provider-windows/SKILL.md)
+- [`scripts/validate_codex3_manager.js`](./codex-dual-provider-windows/scripts/validate_codex3_manager.js)
+- [`scripts/install_windows.ps1`](./codex-dual-provider-windows/scripts/install_windows.ps1)
+- [`references/troubleshooting.md`](./codex-dual-provider-windows/references/troubleshooting.md)
+
 ## 使用与部署
 
 仓库里的目录是源码目录。
@@ -31,5 +45,6 @@
 例如：
 
 - `skills/codex/codex-manager-maintainer/` -> `~/.codex/skills/custom/codex-manager-maintainer/`
+- `skills/codex/codex-dual-provider-windows/` -> `~/.codex/skills/custom/codex-dual-provider-windows/`
 
 排障时如果改了部署副本，记得把修复同步回仓库源码。

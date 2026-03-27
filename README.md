@@ -19,6 +19,8 @@
 
 - [`skills/codex/codex-manager-maintainer/`](./skills/codex/codex-manager-maintainer/)
   维护 `codex_m`，处理安装、修复、升级、迁移与官方身份切换
+- [`skills/codex/codex-dual-provider-windows/`](./skills/codex/codex-dual-provider-windows/)
+  维护 Windows 下官方 `codex` 与第三方 `codex3` 的隔离并存方案
 
 ### Tools
 

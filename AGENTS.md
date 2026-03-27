@@ -27,6 +27,7 @@ mcp/<family>/<entry-name>/
 - `skills/codex/`
   放当前面向 Codex 的 skill 源码，例如：
   - `skills/codex/codex-manager-maintainer/`
+  - `skills/codex/codex-dual-provider-windows/`
 - `tools/codex/`
   放当前与 Codex 工作流直接相关的工具，例如：
   - `tools/codex/codex-tmux-bundle/`
@@ -74,6 +75,9 @@ mcp/<family>/<entry-name>/
 node skills/codex/codex-manager-maintainer/scripts/detect_environment.js
 node skills/codex/codex-manager-maintainer/scripts/validate_codex_manager.js
 cd skills/codex/codex-manager-maintainer/assets/windows-runtime && npm install
+
+node skills/codex/codex-dual-provider-windows/scripts/validate_codex3_manager.js
+cd skills/codex/codex-dual-provider-windows/assets/windows-runtime && npm install
 ```
 
 命令含义：
@@ -84,6 +88,8 @@ cd skills/codex/codex-manager-maintainer/assets/windows-runtime && npm install
   采集当前平台与 Codex 相关环境
 - `validate_codex_manager.js`
   校验 `codex_m` 的安装、状态和官方身份切换一致性
+- `validate_codex3_manager.js`
+  校验 `codex3_m`、隔离 wrapper 与第三方 provider 配置
 - `npm install`
   仅在修改对应 runtime 依赖时使用
 
@@ -102,6 +108,8 @@ cd skills/codex/codex-manager-maintainer/assets/windows-runtime && npm install
 
 - 修改 `skills/codex/codex-manager-maintainer/`
   运行环境检测与校验脚本
+- 修改 `skills/codex/codex-dual-provider-windows/`
+  运行 `validate_codex3_manager.js`，必要时再做 `codex3` / `codex3_m` 手工验证
 - 修改 `tools/codex/codex-tmux-bundle/`
   至少检查安装流程、关键命令入口与 README 示例是否一致
 - 修改 `mcp/`
