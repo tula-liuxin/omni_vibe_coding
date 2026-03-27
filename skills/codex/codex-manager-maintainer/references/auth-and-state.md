@@ -21,6 +21,7 @@
 - Writing that key under a nested table makes Codex ignore it.
 - Preserve unrelated config content.
 - When an official API key profile is active, `forced_chatgpt_workspace_id` must be removed.
+- If plain `codex` is temporarily bridged to the third-party provider, record that mode separately so official doctor/validation can distinguish intentional drift from breakage.
 
 ## Import Current
 

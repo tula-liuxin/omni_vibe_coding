@@ -8,6 +8,8 @@ Run these first:
 Get-Command codex,codex3,codex3_m | Format-Table Name,Source,Path -AutoSize
 node scripts/validate_codex3_manager.js
 codex3 login status
+codex3_m use-codex3 --force
+codex_m use-codex --force
 codex exec --skip-git-repo-check "hello"
 codex3 exec --skip-git-repo-check "hello"
 ```

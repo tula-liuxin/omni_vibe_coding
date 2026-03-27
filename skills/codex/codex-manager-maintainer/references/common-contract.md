@@ -4,7 +4,7 @@
 
 ## User-Facing UX
 
-- Home must stay minimal: `Login`, `Manage`, `Quit`.
+- Home must stay minimal: `Login`, `Account Manage`, `API Key Manage`, `Plain codex -> codex`, `Quit`.
 - `Login now` is the default user path.
 - `Use current signed-in Codex` is advanced and recovery-oriented.
 - A successful login or import must ask for a manual workspace name.
@@ -12,6 +12,7 @@
 - `Enter` switches.
 - `Tab` opens more actions.
 - More actions must include `Rename` and `Logout`.
+- `Plain codex -> codex` is a quick recovery action that restores plain `codex` to the official `~/.codex` state.
 
 ## Real Snapshot Model
 

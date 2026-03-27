@@ -8,6 +8,7 @@ const { spawnSync } = require("node:child_process");
 
 const PROFILE_KIND_CHATGPT = "chatgpt";
 const PROFILE_KIND_OFFICIAL_API_KEY = "official_api_key";
+const PLAIN_CODEX_MODE_THIRD_PARTY = "third_party";
 
 function resolveManagerHome() {
   if (process.env.CODEX_MANAGER_HOME) {
@@ -40,6 +41,19 @@ function pathExists(filePath) {
     return fs.existsSync(filePath);
   } catch {
     return false;
+  }
+}
+
+function readPlainCodexModeState(managerHome) {
+  const filePath = path.join(managerHome, "plain-codex-mode.json");
+  if (!pathExists(filePath)) {
+    return null;
+  }
+  try {
+    const parsed = readJson(filePath);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -249,6 +263,8 @@ const jsonMode = process.argv.includes("--json");
 const managerHome = resolveManagerHome();
 const officialHome = resolveOfficialHome();
 const effectiveCodexHome = resolveEffectiveCodexHome();
+const plainCodexModeState = readPlainCodexModeState(managerHome);
+const plainCodexMode = plainCodexModeState?.mode || "official";
 const launcherDir =
   process.platform === "win32"
     ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
@@ -485,7 +501,11 @@ if (pathExists(officialAuthPath)) {
   }
 }
 
-if (state?.active_official_profile?.kind === PROFILE_KIND_CHATGPT) {
+if (plainCodexMode === PLAIN_CODEX_MODE_THIRD_PARTY) {
+  warnings.push(
+    "Plain codex is intentionally bridged to the third-party provider right now, so official auth/config drift checks are relaxed until you switch back with codex_m.",
+  );
+} else if (state?.active_official_profile?.kind === PROFILE_KIND_CHATGPT) {
   const activeTuple = state.tuples[state.active_official_profile.id];
   if (!activeTuple) {
     issues.push(`Active ChatGPT tuple missing: ${state.active_official_profile.id}`);
@@ -543,6 +563,7 @@ const payload = {
     officialHome,
     launcherDir,
   },
+  plainCodexMode,
 };
 
 if (jsonMode) {

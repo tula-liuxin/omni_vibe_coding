@@ -19,6 +19,14 @@ const STATE_PATH = path.join(MANAGER_HOME, "state.json");
 const PROFILES_DIR = path.join(MANAGER_HOME, "profiles");
 const BACKUPS_DIR = path.join(MANAGER_HOME, "backups");
 const SCRIPTS_DIR = path.join(MANAGER_HOME, "scripts");
+const OFFICIAL_MANAGER_HOME = path.join(os.homedir(), ".codex-manager");
+const PLAIN_CODEX_BRIDGE_DIR = path.join(OFFICIAL_MANAGER_HOME, "plain-codex-bridge");
+const PLAIN_CODEX_MODE_STATE_PATH = path.join(OFFICIAL_MANAGER_HOME, "plain-codex-mode.json");
+const PLAIN_CODEX_BACKUP_AUTH_PATH = path.join(PLAIN_CODEX_BRIDGE_DIR, "official-auth.json");
+const PLAIN_CODEX_BACKUP_CONFIG_PATH = path.join(
+  PLAIN_CODEX_BRIDGE_DIR,
+  "official-config.toml",
+);
 const LAUNCHER_DIR =
   process.platform === "win32"
     ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
@@ -26,6 +34,9 @@ const LAUNCHER_DIR =
 
 const DEFAULT_THIRD_PARTY_HOME = path.join(os.homedir(), ".codex-apikey");
 const DEFAULT_SHARED_CODEX_HOME = path.join(os.homedir(), ".codex");
+const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
+const OFFICIAL_AUTH_PATH = path.join(OFFICIAL_HOME, "auth.json");
+const OFFICIAL_CONFIG_PATH = path.join(OFFICIAL_HOME, "config.toml");
 const DEFAULT_PROVIDER = {
   command_name: "codex3",
   third_party_home: DEFAULT_THIRD_PARTY_HOME,
@@ -61,6 +72,9 @@ function getProviderEnvKey(commandName) {
   return `${normalizeEnvToken(commandName)}_OPENAI_API_KEY`;
 }
 
+const PLAIN_CODEX_MODE_OFFICIAL = "official";
+const PLAIN_CODEX_MODE_THIRD_PARTY = "third_party";
+
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
@@ -81,6 +95,159 @@ function readJson(filePath) {
 
 function readText(filePath) {
   return fs.readFileSync(filePath, "utf8");
+}
+
+function pathExists(filePath) {
+  try {
+    return fs.existsSync(filePath);
+  } catch {
+    return false;
+  }
+}
+
+function readPlainCodexModeState() {
+  if (!pathExists(PLAIN_CODEX_MODE_STATE_PATH)) {
+    return null;
+  }
+  try {
+    const parsed = readJson(PLAIN_CODEX_MODE_STATE_PATH);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function getPlainCodexMode() {
+  const state = readPlainCodexModeState();
+  return state?.mode === PLAIN_CODEX_MODE_THIRD_PARTY
+    ? PLAIN_CODEX_MODE_THIRD_PARTY
+    : PLAIN_CODEX_MODE_OFFICIAL;
+}
+
+function setPlainCodexModeState(mode, extra = {}) {
+  ensureDir(PLAIN_CODEX_BRIDGE_DIR);
+  writeJson(PLAIN_CODEX_MODE_STATE_PATH, {
+    mode,
+    updated_at: new Date().toISOString(),
+    ...extra,
+  });
+}
+
+function capturePlainCodexOfficialBackupsIfNeeded() {
+  if (getPlainCodexMode() === PLAIN_CODEX_MODE_THIRD_PARTY) {
+    return;
+  }
+  ensureDir(PLAIN_CODEX_BRIDGE_DIR);
+  if (pathExists(OFFICIAL_AUTH_PATH)) {
+    fs.copyFileSync(OFFICIAL_AUTH_PATH, PLAIN_CODEX_BACKUP_AUTH_PATH);
+  }
+  if (pathExists(OFFICIAL_CONFIG_PATH)) {
+    fs.copyFileSync(OFFICIAL_CONFIG_PATH, PLAIN_CODEX_BACKUP_CONFIG_PATH);
+  }
+}
+
+function findFirstTomlTableHeaderIndex(lines) {
+  const index = lines.findIndex((line) => /^\s*\[.*\]\s*$/.test(line));
+  return index === -1 ? lines.length : index;
+}
+
+function stripTopLevelTomlEntries(text, keys) {
+  const keySet = new Set(keys);
+  const output = [];
+  let currentTable = null;
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (/^\s*\[.*\]\s*$/.test(rawLine)) {
+      currentTable = trimmed;
+      output.push(rawLine);
+      continue;
+    }
+    if (currentTable === null) {
+      const match = trimmed.match(/^([A-Za-z0-9_.-]+)\s*=/);
+      if (match && keySet.has(match[1])) {
+        continue;
+      }
+    }
+    output.push(rawLine);
+  }
+
+  return output.join("\n");
+}
+
+function writeManagedTopLevelTomlKeys(text, entries, commentLabel) {
+  const keys = Object.keys(entries);
+  const cleanedText = stripTopLevelTomlEntries(text, keys);
+  const lines = cleanedText ? cleanedText.split(/\r?\n/) : [];
+  const firstTableIndex = findFirstTomlTableHeaderIndex(lines);
+  const before = lines.slice(0, firstTableIndex);
+  const after = lines.slice(firstTableIndex);
+
+  while (before.length && !before[before.length - 1].trim()) {
+    before.pop();
+  }
+  while (after.length && !after[0].trim()) {
+    after.shift();
+  }
+
+  const managedBlock = [
+    commentLabel,
+    ...Object.entries(entries).map(([key, serializedValue]) => `${key} = ${serializedValue}`),
+  ];
+
+  const outputLines = [];
+  if (before.length) {
+    outputLines.push(...before, "");
+  }
+  outputLines.push(...managedBlock);
+  if (after.length) {
+    outputLines.push("", ...after);
+  }
+
+  return outputLines.join("\n").replace(/\n?$/, "\n");
+}
+
+function replaceTomlTable(text, tableName, entries, commentLabel) {
+  const tableHeader = `[${tableName}]`;
+  const lines = text ? text.split(/\r?\n/) : [];
+  let start = -1;
+  let end = lines.length;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (start === -1) {
+      if (trimmed === tableHeader) {
+        start = index;
+      }
+      continue;
+    }
+    if (/^\[.*\]$/.test(trimmed)) {
+      end = index;
+      break;
+    }
+  }
+
+  if (start !== -1) {
+    if (start > 0 && lines[start - 1].trim() === commentLabel) {
+      start -= 1;
+    }
+    lines.splice(start, end - start);
+  }
+
+  while (lines.length && !lines[lines.length - 1].trim()) {
+    lines.pop();
+  }
+  if (lines.length) {
+    lines.push("");
+  }
+
+  lines.push(commentLabel, tableHeader);
+  for (const [key, serializedValue] of Object.entries(entries)) {
+    lines.push(`${key} = ${serializedValue}`);
+  }
+  lines.push("");
+
+  return lines.join("\n").replace(/\n?$/, "\n");
 }
 
 function isoNow() {
@@ -352,6 +519,57 @@ function writeThirdPartyConfig(provider) {
   writeText(thirdPartyConfigPath(provider), text);
 }
 
+function buildPlainCodexThirdPartyTopLevelEntries(provider) {
+  return {
+    cli_auth_credentials_store: '"file"',
+    model_provider: JSON.stringify(provider.provider_name),
+    model: JSON.stringify(provider.model),
+    review_model: JSON.stringify(provider.review_model),
+    model_reasoning_effort: JSON.stringify(provider.model_reasoning_effort),
+    disable_response_storage: "true",
+    network_access: '"enabled"',
+    windows_wsl_setup_acknowledged: "true",
+    model_context_window: String(provider.model_context_window),
+    model_auto_compact_token_limit: String(provider.model_auto_compact_token_limit),
+  };
+}
+
+function buildPlainCodexThirdPartyProviderTableEntries(provider) {
+  return {
+    name: JSON.stringify(provider.provider_name),
+    base_url: JSON.stringify(provider.base_url),
+    wire_api: JSON.stringify("responses"),
+    requires_openai_auth: "true",
+  };
+}
+
+function applyPlainCodexThirdPartyBridge(provider) {
+  ensureDir(OFFICIAL_HOME);
+  const commentLabel = "# codex3_m managed plain codex";
+  let configText = pathExists(OFFICIAL_CONFIG_PATH) ? readText(OFFICIAL_CONFIG_PATH) : "";
+  configText = writeManagedTopLevelTomlKeys(
+    configText,
+    buildPlainCodexThirdPartyTopLevelEntries(provider),
+    commentLabel,
+  );
+  configText = replaceTomlTable(
+    configText,
+    `model_providers.${provider.provider_name}`,
+    buildPlainCodexThirdPartyProviderTableEntries(provider),
+    commentLabel,
+  );
+  writeText(OFFICIAL_CONFIG_PATH, configText);
+}
+
+function copyThirdPartyAuthToOfficial(provider) {
+  const source = thirdPartyAuthPath(provider);
+  if (!pathExists(source)) {
+    throw new Error(`Third-party auth is missing at ${source}`);
+  }
+  ensureDir(OFFICIAL_HOME);
+  fs.copyFileSync(source, OFFICIAL_AUTH_PATH);
+}
+
 function resolveWrapperInstallerPath() {
   const candidates = [
     path.join(SCRIPTS_DIR, "install_codex3_wrapper.ps1"),
@@ -492,6 +710,47 @@ async function activateProfile(state, profileId, { silent = false, skipProcessCh
   if (!silent) {
     console.log(
       `Applied third-party profile: ${profile.alias} | ${readSavedProfileMaskedKey(profile.profile_id)}`,
+    );
+    if (skipProcessCheck) {
+      console.log(
+        "Heads-up: already-running Codex windows keep their old in-memory auth until they are restarted.",
+      );
+    }
+  }
+}
+
+async function setPlainCodexThirdPartyMode(
+  state,
+  { silent = false, skipProcessCheck = false } = {},
+) {
+  const provider = normalizeProvider(state.provider);
+  const activeProfileId = state.active_profile_id;
+  if (!activeProfileId) {
+    throw new Error(
+      "No active third-party profile is selected. Use Manage first so codex3_m knows which profile plain codex should follow.",
+    );
+  }
+
+  if (!skipProcessCheck) {
+    assertNoRunningCodexProcesses();
+  }
+
+  await activateProfile(state, activeProfileId, { silent: true, skipProcessCheck: true });
+  capturePlainCodexOfficialBackupsIfNeeded();
+  copyThirdPartyAuthToOfficial(provider);
+  applyPlainCodexThirdPartyBridge(provider);
+
+  setPlainCodexModeState(PLAIN_CODEX_MODE_THIRD_PARTY, {
+    source: "codex3_m",
+    provider_name: provider.provider_name,
+    provider_base_url: provider.base_url,
+    active_profile_id: activeProfileId,
+  });
+
+  if (!silent) {
+    const profile = requireProfile(state, activeProfileId);
+    console.log(
+      `Plain codex now follows codex3 using third-party profile: ${profile.alias} | ${readSavedProfileMaskedKey(profile.profile_id)}`,
     );
     if (skipProcessCheck) {
       console.log(
@@ -1071,6 +1330,7 @@ function printProfileSummary(state) {
 
 function printOverview(state) {
   const provider = normalizeProvider(state.provider);
+  const plainCodexMode = getPlainCodexMode();
   console.log("codex3_m");
   console.log("");
   console.log(`Command: ${provider.command_name}`);
@@ -1078,6 +1338,7 @@ function printOverview(state) {
   console.log(`Shared Codex home: ${provider.shared_codex_home}`);
   console.log(`Provider: ${provider.provider_name} | ${provider.base_url}`);
   console.log(`Model: ${provider.model} | review ${provider.review_model}`);
+  console.log(`Plain codex mode: ${plainCodexMode}`);
   console.log(`Saved profiles: ${getProfiles(state).length}`);
   console.log(
     `Active profile: ${state.active_profile_id ? `${requireProfile(state, state.active_profile_id).alias} | ${readSavedProfileMaskedKey(state.active_profile_id)}` : "(none)"}`,
@@ -1091,6 +1352,7 @@ function printOverview(state) {
   console.log("  codex3_m activate <profile-id> [--force]");
   console.log("  codex3_m rename <profile-id> --alias <manual-name>");
   console.log("  codex3_m delete <profile-id> [--force]");
+  console.log("  codex3_m use-codex3 [--force]");
   console.log("  codex3_m provider show");
   console.log("  codex3_m provider set");
   console.log("  codex3_m doctor");
@@ -1397,6 +1659,11 @@ async function runOverviewPage() {
           hint: "edit shared wrapper/provider settings for codex3",
         },
         {
+          name: "use_codex3",
+          message: "Plain codex -> codex3",
+          hint: "bridge ~/.codex to the active third-party profile without touching the launcher",
+        },
+        {
           name: "quit",
           message: "Quit",
         },
@@ -1416,6 +1683,15 @@ async function runOverviewPage() {
       await runManagePage();
       continue;
     }
+    if (choice === "use_codex3") {
+      const decision = await interactiveResolveForce("plain-codex bridge");
+      if (!decision.proceed) {
+        console.log("Plain codex bridge canceled.");
+        continue;
+      }
+      await setPlainCodexThirdPartyMode(loadState(), { skipProcessCheck: decision.force });
+      return;
+    }
     await runProviderPage();
   }
 }
@@ -1433,12 +1709,13 @@ Usage:
   codex3_m activate <profile-id> [--force]
   codex3_m rename <profile-id> --alias <manual-name>
   codex3_m delete <profile-id> [--force]
+  codex3_m use-codex3 [--force]
   codex3_m provider show [--json]
   codex3_m provider set [--command-name <name>] [--third-party-home <path>] [--shared-codex-home <path>] [--provider-name <name>] [--base-url <url>] [--model <name>] [--review-model <name>] [--model-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]
   codex3_m doctor
 
 Notes:
-  - Running plain 'codex3_m' opens a Home page with Login, Manage, Provider, and Quit.
+  - Running plain 'codex3_m' opens a Home page with Login, Manage, Provider, Plain codex -> codex3, and Quit.
   - codex3_m keeps third-party auth outside ~/.codex while reusing ~/.codex as the shared runtime home by default.
   - The provider mirror config lives under ~/.codex-apikey/config.toml by default and records the tutorial values applied to codex3.
   - Saved third-party API key profiles live under ~/.codex3-manager/profiles/.
@@ -1523,6 +1800,29 @@ async function handleActivate(state, args) {
   }
 
   await activateProfile(state, profileId, { skipProcessCheck: force });
+}
+
+async function handleUseCodex3(state, args) {
+  let force = false;
+
+  for (const arg of args) {
+    if (arg === "--force") {
+      force = true;
+    } else {
+      throw new Error(`Unknown use-codex3 option: ${arg}`);
+    }
+  }
+
+  if (!force && process.stdin.isTTY) {
+    const decision = await interactiveResolveForce("plain-codex bridge");
+    if (!decision.proceed) {
+      console.log("Plain codex bridge canceled.");
+      return;
+    }
+    force = decision.force;
+  }
+
+  await setPlainCodexThirdPartyMode(state, { skipProcessCheck: force });
 }
 
 async function handleRename(state, args) {
@@ -1712,6 +2012,11 @@ async function handleCommand(args) {
 
   if (command === "activate") {
     await handleActivate(state, rest);
+    return;
+  }
+
+  if (command === "use-codex3") {
+    await handleUseCodex3(state, rest);
     return;
   }
 

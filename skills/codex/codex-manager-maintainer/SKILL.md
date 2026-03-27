@@ -45,12 +45,13 @@ description: Install, repair, upgrade, and extend codex_m as a machine-local Cod
 
 Keep these behaviors stable unless the user explicitly asks to change them:
 
-- Home shows `Login`, `Account Manage`, `API Key Manage`, `Quit`.
+- Home shows `Login`, `Account Manage`, `API Key Manage`, `Plain codex -> codex`, `Quit`.
 - `Login now` is the main login path.
 - `Use current signed-in Codex` is an advanced recovery/import path.
 - After login or import, prompt for a manual workspace name.
 - `Account Manage` lists only real saved ChatGPT login snapshots.
 - `API Key Manage` lists only saved official API key profiles.
+- `Plain codex -> codex` restores plain `codex` back to the official `~/.codex` state without changing the launcher.
 - Distinct `(account_email, chatgpt_account_id)` snapshots must remain separately saved and manageable when the email differs.
 - `Enter` switches to the selected profile in the current manage section.
 - `Tab` opens section-appropriate actions such as `Rename`, `Logout`, or `Delete`.

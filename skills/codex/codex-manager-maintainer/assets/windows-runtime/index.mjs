@@ -19,6 +19,13 @@ const ACCOUNTS_DIR = path.join(MANAGER_HOME, "accounts");
 const OFFICIAL_API_KEYS_DIR = path.join(MANAGER_HOME, "official-api-keys");
 const BACKUPS_DIR = path.join(MANAGER_HOME, "backups");
 const TMP_DIR = path.join(MANAGER_HOME, "tmp");
+const PLAIN_CODEX_BRIDGE_DIR = path.join(MANAGER_HOME, "plain-codex-bridge");
+const PLAIN_CODEX_MODE_STATE_PATH = path.join(MANAGER_HOME, "plain-codex-mode.json");
+const PLAIN_CODEX_BACKUP_AUTH_PATH = path.join(PLAIN_CODEX_BRIDGE_DIR, "official-auth.json");
+const PLAIN_CODEX_BACKUP_CONFIG_PATH = path.join(
+  PLAIN_CODEX_BRIDGE_DIR,
+  "official-config.toml",
+);
 
 const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
 const OFFICIAL_AUTH_PATH = path.join(OFFICIAL_HOME, "auth.json");
@@ -30,6 +37,8 @@ const MANAGED_CONFIG_KEYS = {
 
 const PROFILE_KIND_CHATGPT = "chatgpt";
 const PROFILE_KIND_OFFICIAL_API_KEY = "official_api_key";
+const PLAIN_CODEX_MODE_OFFICIAL = "official";
+const PLAIN_CODEX_MODE_THIRD_PARTY = "third_party";
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -49,12 +58,63 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
+function readText(filePath) {
+  return fs.readFileSync(filePath, "utf8");
+}
+
+function pathExists(filePath) {
+  try {
+    return fs.existsSync(filePath);
+  } catch {
+    return false;
+  }
+}
+
+function readPlainCodexModeState() {
+  if (!pathExists(PLAIN_CODEX_MODE_STATE_PATH)) {
+    return null;
+  }
+  try {
+    const parsed = readJson(PLAIN_CODEX_MODE_STATE_PATH);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function getPlainCodexMode() {
+  const state = readPlainCodexModeState();
+  return state?.mode === PLAIN_CODEX_MODE_THIRD_PARTY
+    ? PLAIN_CODEX_MODE_THIRD_PARTY
+    : PLAIN_CODEX_MODE_OFFICIAL;
+}
+
+function setPlainCodexModeState(mode, extra = {}) {
+  ensureDir(PLAIN_CODEX_BRIDGE_DIR);
+  writeJson(PLAIN_CODEX_MODE_STATE_PATH, {
+    mode,
+    updated_at: new Date().toISOString(),
+    ...extra,
+  });
+}
+
+function restorePlainCodexBridgeBackups() {
+  ensureDir(OFFICIAL_HOME);
+  if (pathExists(PLAIN_CODEX_BACKUP_CONFIG_PATH)) {
+    fs.copyFileSync(PLAIN_CODEX_BACKUP_CONFIG_PATH, OFFICIAL_CONFIG_PATH);
+  }
+  if (pathExists(PLAIN_CODEX_BACKUP_AUTH_PATH)) {
+    fs.copyFileSync(PLAIN_CODEX_BACKUP_AUTH_PATH, OFFICIAL_AUTH_PATH);
+  }
+}
+
 function loadState() {
   ensureDir(MANAGER_HOME);
   ensureDir(ACCOUNTS_DIR);
   ensureDir(OFFICIAL_API_KEYS_DIR);
   ensureDir(BACKUPS_DIR);
   ensureDir(TMP_DIR);
+  ensureDir(PLAIN_CODEX_BRIDGE_DIR);
 
   if (!fs.existsSync(STATE_PATH)) {
     const state = {
@@ -1134,6 +1194,55 @@ async function activateOfficialProfileRef(
   await activateOfficialApiKeyProfile(state, profileRef.id, { silent, skipProcessCheck });
 }
 
+async function setPlainCodexOfficialMode(
+  state,
+  { silent = false, skipProcessCheck = false } = {},
+) {
+  if (!skipProcessCheck) {
+    assertNoRunningCodexProcesses();
+  }
+
+  const activeProfile = getActiveOfficialProfile(state);
+  const hasBackupConfig = pathExists(PLAIN_CODEX_BACKUP_CONFIG_PATH);
+  const hasBackupAuth = pathExists(PLAIN_CODEX_BACKUP_AUTH_PATH);
+
+  if (!activeProfile && !hasBackupConfig && !hasBackupAuth) {
+    throw new Error(
+      "No active official profile or plain-codex backup is available. Activate an official profile in codex_m first.",
+    );
+  }
+
+  restorePlainCodexBridgeBackups();
+
+  if (activeProfile) {
+    await activateOfficialProfileRef(
+      state,
+      { kind: activeProfile.kind, id: activeProfile.id },
+      { silent: true, skipProcessCheck: true },
+    );
+  }
+
+  setPlainCodexModeState(PLAIN_CODEX_MODE_OFFICIAL, {
+    source: "codex_m",
+    active_official_kind: activeProfile?.kind || null,
+    active_official_id: activeProfile?.id || null,
+  });
+
+  if (!silent) {
+    console.log("Plain codex now points back to the official codex_m-managed state.");
+    if (activeProfile) {
+      console.log(`Restored official profile: ${getActiveOfficialProfileLabel(state)}`);
+    } else {
+      console.log("Restored the last plain-codex official backup.");
+    }
+    if (skipProcessCheck) {
+      console.log(
+        "Heads-up: other running Codex windows may still use their old in-memory auth until you restart them.",
+      );
+    }
+  }
+}
+
 function removeTupleAndMaybeAccount(state, tupleId) {
   const tuple = requireTuple(state, tupleId);
   delete state.tuples[tupleId];
@@ -1392,6 +1501,7 @@ function doctorReport(state) {
   const officialAuthKind = getOfficialAuthKind();
   const officialAccountId = getOfficialAuthAccountId();
   const currentWorkspaceId = getCurrentWorkspaceRestriction(configText);
+  const plainCodexMode = getPlainCodexMode();
 
   if (
     state.active_tuple_id &&
@@ -1400,7 +1510,11 @@ function doctorReport(state) {
     issues.push("active_tuple_id should be null unless the active official profile is ChatGPT.");
   }
 
-  if (activeProfile?.kind === PROFILE_KIND_CHATGPT) {
+  if (plainCodexMode === PLAIN_CODEX_MODE_THIRD_PARTY) {
+    warnings.push(
+      "Plain codex is intentionally bridged to the third-party provider right now, so official auth/config drift checks are relaxed until you run 'codex_m use-codex'.",
+    );
+  } else if (activeProfile?.kind === PROFILE_KIND_CHATGPT) {
     const activeTuple = activeProfile.record;
     if (officialAuthKind !== PROFILE_KIND_CHATGPT) {
       issues.push("Active official profile is ChatGPT, but ~/.codex/auth.json is not ChatGPT auth.");
@@ -1614,12 +1728,14 @@ function printOverview(state) {
   const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialConfigText());
   const processes = detectRunningCodexProcesses();
   const officialAuthKind = getOfficialAuthKind();
+  const plainCodexMode = getPlainCodexMode();
 
   console.log("codex_m");
   console.log("");
   console.log(`Saved ChatGPT snapshots: ${tuples.length}`);
   console.log(`Saved official API keys: ${getOfficialApiKeyProfiles(state).length}`);
   console.log(`Active official profile: ${getActiveOfficialProfileLabel(state)}`);
+  console.log(`Plain codex mode: ${plainCodexMode}`);
   console.log(`Official auth kind: ${formatProfileKindLabel(officialAuthKind || "(none)")}`);
   console.log(`Forced login workspace: ${currentWorkspace || "(not set)"}`);
   console.log(
@@ -1639,6 +1755,7 @@ function printOverview(state) {
   console.log("  codex_m import-current [--kind chatgpt|official-api-key]");
   console.log("  codex_m add-workspace");
   console.log("  codex_m activate [--kind chatgpt|official-api-key] <id> [--force]");
+  console.log("  codex_m use-codex");
   console.log("  codex_m rename [--kind chatgpt|official-api-key] <id> --alias <manual-name>");
   console.log("  codex_m delete [--kind chatgpt|official-api-key] <id> [--force]");
   console.log("  codex_m doctor");
@@ -2697,6 +2814,29 @@ async function handleActivate(state, args) {
   await activateOfficialApiKeyProfile(state, profileRef.id, { skipProcessCheck: force });
 }
 
+async function handleUseCodex(state, args) {
+  let force = false;
+
+  for (const arg of args) {
+    if (arg === "--force") {
+      force = true;
+    } else {
+      throw new Error(`Unknown use-codex option: ${arg}`);
+    }
+  }
+
+  if (!force && process.stdin.isTTY) {
+    const decision = await interactiveResolveForce("plain-codex restore");
+    if (!decision.proceed) {
+      console.log("Plain codex restore canceled.");
+      return;
+    }
+    force = decision.force;
+  }
+
+  await setPlainCodexOfficialMode(state, { skipProcessCheck: force });
+}
+
 async function handleRename(state, args) {
   let recordId = null;
   let kind = null;
@@ -3323,6 +3463,11 @@ async function runOverviewPage() {
           hint: `${getOfficialApiKeyProfiles(state).length} saved official API key profiles`,
         },
         {
+          name: "use_codex",
+          message: "Plain codex -> codex",
+          hint: "restore ~/.codex to the official codex_m-managed state",
+        },
+        {
           name: "quit",
           message: "Quit",
         },
@@ -3348,6 +3493,14 @@ async function runOverviewPage() {
       await runManageOfficialApiKeysPage();
       continue;
     }
+
+    const decision = await interactiveResolveForce("plain-codex restore");
+    if (!decision.proceed) {
+      console.log("Plain codex restore canceled.");
+      continue;
+    }
+    await setPlainCodexOfficialMode(loadState(), { skipProcessCheck: decision.force });
+    return;
   }
 }
 
@@ -3586,12 +3739,13 @@ Usage:
   codex_m import-current [--kind chatgpt|official-api-key] [--workspace-id <id>] [--alias <manual-name>] [--activate|--no-activate] [--force]
   codex_m add-workspace
   codex_m activate [--kind chatgpt|official-api-key] <id> [--force]
+  codex_m use-codex [--force]
   codex_m rename [--kind chatgpt|official-api-key] <id> --alias <manual-name>
   codex_m delete [--kind chatgpt|official-api-key] <id> [--force]
   codex_m doctor
 
 Notes:
-  - Running plain 'codex_m' opens a simple Home page with Login, Account Manage, API Key Manage, and Quit.
+  - Running plain 'codex_m' opens a simple Home page with Login, Account Manage, API Key Manage, Plain codex -> codex, and Quit.
   - Account Manage applies saved official ChatGPT snapshots; API Key Manage applies saved official API key profiles.
   - In Account Manage or API Key Manage, Enter applies the selected saved profile and Tab opens Rename/Delete or Logout actions for that section.
   - ChatGPT workspace display names and official API key profile names are always manual.
@@ -3675,6 +3829,11 @@ async function handleCommand(args) {
 
   if (command === "activate") {
     await handleActivate(state, rest);
+    return;
+  }
+
+  if (command === "use-codex") {
+    await handleUseCodex(state, rest);
     return;
   }
 

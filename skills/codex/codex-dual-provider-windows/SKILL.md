@@ -11,6 +11,7 @@ description: Configure and maintain a split Codex CLI setup on Windows where off
 - Create and maintain a dedicated third-party command (default `codex3`).
 - Create and maintain a dedicated third-party manager command `codex3_m`.
 - Keep third-party auth and provider metadata under a separate home, while reusing a shared Codex runtime home by default.
+- Expose a quick `Plain codex -> codex3` action from `codex3_m` that temporarily bridges plain `codex` to the active third-party profile without replacing the launcher.
 - When the user provides a provider tutorial, treat that tutorial as the source of truth for the third-party config shape and values.
 
 ## Workflow
