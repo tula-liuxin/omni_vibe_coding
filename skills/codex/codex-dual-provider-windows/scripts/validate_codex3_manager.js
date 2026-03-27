@@ -41,6 +41,19 @@ function normalizeProfile(profile, profileId) {
   };
 }
 
+function normalizeEnvToken(value, fallback = "CODEX3") {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+  return normalized || fallback;
+}
+
+function getProviderEnvKey(commandName) {
+  return `${normalizeEnvToken(commandName)}_OPENAI_API_KEY`;
+}
+
 const jsonMode = process.argv.includes("--json");
 const managerHome = process.env.CODEX3_MANAGER_HOME
   ? path.resolve(process.env.CODEX3_MANAGER_HOME)
@@ -91,6 +104,7 @@ if (pathExists(statePath)) {
 let provider = {
   command_name: "codex3",
   third_party_home: path.join(os.homedir(), ".codex-apikey"),
+  shared_codex_home: path.join(os.homedir(), ".codex"),
   provider_name: "OpenAI",
   base_url: "https://sub.aimizy.com",
   model: "gpt-5.4",
@@ -123,7 +137,15 @@ if (process.env.OPENAI_API_KEY && String(process.env.OPENAI_API_KEY).trim()) {
 }
 
 if (path.resolve(provider.third_party_home) === path.resolve(path.join(os.homedir(), ".codex"))) {
-  issues.push("third_party_home resolves to ~/.codex, which breaks isolation from official codex.");
+  issues.push("third_party_home resolves to ~/.codex, which would mix third-party auth storage with the shared Codex home.");
+}
+
+if (path.resolve(provider.third_party_home) === path.resolve(provider.shared_codex_home)) {
+  issues.push("third_party_home matches shared_codex_home, so third-party auth would leak into the shared Codex state.");
+}
+
+if (!pathExists(provider.shared_codex_home)) {
+  warnings.push(`Shared Codex home does not exist yet: ${provider.shared_codex_home}`);
 }
 
 if (state && state.profiles && typeof state.profiles === "object") {
@@ -164,6 +186,8 @@ if (!pathExists(thirdPartyConfigPath)) {
     `model_context_window = ${provider.model_context_window}`,
     `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
     `base_url = "${provider.base_url}"`,
+    `env_key = "${getProviderEnvKey(provider.command_name)}"`,
+    "requires_openai_auth = false",
   ]) {
     if (!configText.includes(snippet)) {
       issues.push(`Third-party config is missing expected setting: ${snippet}`);
@@ -193,6 +217,12 @@ if (pathExists(wrapperPs1Path)) {
   const wrapperText = readText(wrapperPs1Path);
   if (!wrapperText.includes("previousCodexHome")) {
     warnings.push("Wrapper ps1 does not appear to restore CODEX_HOME.");
+  }
+  if (!wrapperText.includes("sharedCodexHome")) {
+    warnings.push("Wrapper ps1 does not appear to target a shared CODEX_HOME.");
+  }
+  if (!wrapperText.includes("providerEnvKeyName")) {
+    warnings.push("Wrapper ps1 does not appear to inject the provider env key.");
   }
   if (!wrapperText.includes("previousOpenAiApiKey")) {
     warnings.push("Wrapper ps1 does not appear to restore OPENAI_API_KEY.");
@@ -239,6 +269,7 @@ const payload = {
     managerHome,
     launcherDir,
     thirdPartyHome: provider.third_party_home,
+    sharedCodexHome: provider.shared_codex_home,
   },
 };
 

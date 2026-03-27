@@ -25,9 +25,11 @@ const LAUNCHER_DIR =
     : path.join(os.homedir(), ".local", "bin");
 
 const DEFAULT_THIRD_PARTY_HOME = path.join(os.homedir(), ".codex-apikey");
+const DEFAULT_SHARED_CODEX_HOME = path.join(os.homedir(), ".codex");
 const DEFAULT_PROVIDER = {
   command_name: "codex3",
   third_party_home: DEFAULT_THIRD_PARTY_HOME,
+  shared_codex_home: DEFAULT_SHARED_CODEX_HOME,
   provider_name: "OpenAI",
   base_url: "https://sub.aimizy.com",
   model: "gpt-5.4",
@@ -45,6 +47,19 @@ const REPO_WRAPPER_INSTALLER = path.resolve(
   "scripts",
   "install_codex3_wrapper.ps1",
 );
+
+function normalizeEnvToken(value, fallback = "CODEX3") {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+  return normalized || fallback;
+}
+
+function getProviderEnvKey(commandName) {
+  return `${normalizeEnvToken(commandName)}_OPENAI_API_KEY`;
+}
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -84,14 +99,19 @@ function backupFileIfExists(filePath, label) {
 }
 
 function normalizeProvider(provider = {}) {
+  const commandName =
+    String(provider.command_name || DEFAULT_PROVIDER.command_name).trim() ||
+    DEFAULT_PROVIDER.command_name;
   const thirdPartyHome = path.resolve(
     String(provider.third_party_home || DEFAULT_PROVIDER.third_party_home),
   );
+  const sharedCodexHome = path.resolve(
+    String(provider.shared_codex_home || DEFAULT_PROVIDER.shared_codex_home),
+  );
   return {
-    command_name:
-      String(provider.command_name || DEFAULT_PROVIDER.command_name).trim() ||
-      DEFAULT_PROVIDER.command_name,
+    command_name: commandName,
     third_party_home: thirdPartyHome,
+    shared_codex_home: sharedCodexHome,
     provider_name:
       String(provider.provider_name || DEFAULT_PROVIDER.provider_name).trim() ||
       DEFAULT_PROVIDER.provider_name,
@@ -242,6 +262,7 @@ function buildAuthData(apiKey) {
     throw new Error("API key is required.");
   }
   return {
+    auth_mode: "apikey",
     OPENAI_API_KEY: trimmed,
   };
 }
@@ -301,6 +322,7 @@ function saveProfileAuth(profileId, authData) {
 }
 
 function writeThirdPartyConfig(provider) {
+  const providerEnvKey = getProviderEnvKey(provider.command_name);
   const text = [
     'cli_auth_credentials_store = "file"',
     `model_provider = "${provider.provider_name}"`,
@@ -316,8 +338,9 @@ function writeThirdPartyConfig(provider) {
     `[model_providers.${provider.provider_name}]`,
     `name = "${provider.provider_name}"`,
     `base_url = "${provider.base_url}"`,
+    `env_key = "${providerEnvKey}"`,
     'wire_api = "responses"',
-    'requires_openai_auth = true',
+    'requires_openai_auth = false',
     "",
     "[features]",
     "apps = false",
@@ -358,6 +381,8 @@ function runWrapperInstaller(provider) {
     provider.command_name,
     "-ThirdPartyHome",
     provider.third_party_home,
+    "-SharedCodexHome",
+    provider.shared_codex_home,
     "-ProviderName",
     provider.provider_name,
     "-BaseUrl",
@@ -550,7 +575,15 @@ function doctorReport(state) {
 
   const officialHome = path.join(os.homedir(), ".codex");
   if (path.resolve(provider.third_party_home) === path.resolve(officialHome)) {
-    issues.push("third_party_home resolves to ~/.codex, which breaks isolation from official codex.");
+    issues.push("third_party_home resolves to ~/.codex, which would mix third-party auth storage with the shared Codex home.");
+  }
+
+  if (path.resolve(provider.third_party_home) === path.resolve(provider.shared_codex_home)) {
+    issues.push("third_party_home matches shared_codex_home, so third-party auth would leak into the shared Codex state.");
+  }
+
+  if (!fs.existsSync(provider.shared_codex_home)) {
+    warnings.push(`Shared Codex home does not exist yet: ${provider.shared_codex_home}`);
   }
 
   for (const profile of getProfiles(state)) {
@@ -608,6 +641,8 @@ function doctorReport(state) {
       `model_context_window = ${provider.model_context_window}`,
       `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
       `base_url = "${provider.base_url}"`,
+      `env_key = "${getProviderEnvKey(provider.command_name)}"`,
+      "requires_openai_auth = false",
     ];
     for (const snippet of requiredSnippets) {
       if (!configText.includes(snippet)) {
@@ -620,6 +655,12 @@ function doctorReport(state) {
     const wrapperText = readText(wrapperPs1Path);
     if (!wrapperText.includes("previousCodexHome")) {
       warnings.push("Wrapper ps1 does not appear to restore CODEX_HOME.");
+    }
+    if (!wrapperText.includes("sharedCodexHome")) {
+      warnings.push("Wrapper ps1 does not appear to target a shared CODEX_HOME.");
+    }
+    if (!wrapperText.includes("providerEnvKeyName")) {
+      warnings.push("Wrapper ps1 does not appear to inject the provider env key.");
     }
     if (!wrapperText.includes("previousOpenAiApiKey")) {
       warnings.push("Wrapper ps1 does not appear to restore OPENAI_API_KEY.");
@@ -910,7 +951,7 @@ async function interactiveResolveForce(actionLabel) {
 
   console.log("");
   console.log(`Running Codex CLI detected: ${formatProcessSummary(processes)}`);
-  console.log(`This ${actionLabel} updates the isolated third-party auth and config files.`);
+  console.log(`This ${actionLabel} updates the shared third-party auth/profile files.`);
   console.log(
     "Already-running Codex windows keep their old in-memory auth until they are restarted.",
   );
@@ -1034,6 +1075,7 @@ function printOverview(state) {
   console.log("");
   console.log(`Command: ${provider.command_name}`);
   console.log(`Third-party home: ${provider.third_party_home}`);
+  console.log(`Shared Codex home: ${provider.shared_codex_home}`);
   console.log(`Provider: ${provider.provider_name} | ${provider.base_url}`);
   console.log(`Model: ${provider.model} | review ${provider.review_model}`);
   console.log(`Saved profiles: ${getProfiles(state).length}`);
@@ -1174,7 +1216,7 @@ async function runProviderPage() {
     const provider = normalizeProvider(state.provider);
     const choice = await selectChoice({
       title: "Provider",
-      description: "Inspect or update the shared third-party provider settings used by codex3.",
+      description: "Inspect or update the shared-state provider settings used by codex3.",
       state,
       choices: [
         {
@@ -1210,7 +1252,8 @@ async function runProviderPage() {
         state,
         choices: [
           { name: "command", message: `Command: ${provider.command_name}`, hint: "wrapper command" },
-          { name: "home", message: `Third-party home: ${provider.third_party_home}`, hint: "isolated CODEX_HOME" },
+          { name: "home", message: `Third-party home: ${provider.third_party_home}`, hint: "stores third-party auth and provider mirror config" },
+          { name: "shared_home", message: `Shared Codex home: ${provider.shared_codex_home}`, hint: "runtime CODEX_HOME reused by codex and codex3" },
           { name: "provider", message: `Provider: ${provider.provider_name}`, hint: "model_provider name" },
           { name: "url", message: `Base URL: ${provider.base_url}`, hint: "OpenAI-compatible endpoint" },
           { name: "model", message: `Model: ${provider.model}`, hint: "default model" },
@@ -1235,8 +1278,11 @@ async function runProviderPage() {
       (await promptInputPrompt("Wrapper command name:", provider.command_name)) ||
       provider.command_name;
     const thirdPartyHome =
-      (await promptInputPrompt("Third-party CODEX_HOME:", provider.third_party_home)) ||
+      (await promptInputPrompt("Third-party auth home:", provider.third_party_home)) ||
       provider.third_party_home;
+    const sharedCodexHome =
+      (await promptInputPrompt("Shared Codex home:", provider.shared_codex_home)) ||
+      provider.shared_codex_home;
     const providerName =
       (await promptInputPrompt("Provider name:", provider.provider_name)) ||
       provider.provider_name;
@@ -1263,6 +1309,8 @@ async function runProviderPage() {
       commandName,
       "--third-party-home",
       thirdPartyHome,
+      "--shared-codex-home",
+      sharedCodexHome,
       "--provider-name",
       providerName,
       "--base-url",
@@ -1286,7 +1334,7 @@ async function runLoginPage() {
     const state = loadState();
     const choice = await selectChoice({
       title: "Login",
-      description: "Save a third-party API key profile for isolated codex3 usage.",
+      description: "Save a third-party API key profile while reusing the shared Codex home.",
       state,
       choices: [
         {
@@ -1297,7 +1345,7 @@ async function runLoginPage() {
         {
           name: "import_current",
           message: "Use current third-party auth.json",
-          hint: "imports the auth already present in the isolated third-party CODEX_HOME",
+          hint: "imports the auth already present in the third-party auth home",
         },
         {
           name: "back",
@@ -1375,7 +1423,7 @@ async function runOverviewPage() {
 function printHelp() {
   console.log(`codex3_m
 
-Machine-local manager for isolated third-party codex3 API key profiles on Windows.
+Machine-local manager for shared-state codex3 API key profiles on Windows.
 
 Usage:
   codex3_m
@@ -1386,13 +1434,13 @@ Usage:
   codex3_m rename <profile-id> --alias <manual-name>
   codex3_m delete <profile-id> [--force]
   codex3_m provider show [--json]
-  codex3_m provider set [--command-name <name>] [--third-party-home <path>] [--provider-name <name>] [--base-url <url>] [--model <name>] [--review-model <name>] [--model-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]
+  codex3_m provider set [--command-name <name>] [--third-party-home <path>] [--shared-codex-home <path>] [--provider-name <name>] [--base-url <url>] [--model <name>] [--review-model <name>] [--model-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]
   codex3_m doctor
 
 Notes:
   - Running plain 'codex3_m' opens a Home page with Login, Manage, Provider, and Quit.
-  - codex3_m only manages the isolated third-party command and never touches official ~/.codex state.
-  - The shared provider config lives under ~/.codex-apikey/config.toml by default and mirrors the tutorial values you provide.
+  - codex3_m keeps third-party auth outside ~/.codex while reusing ~/.codex as the shared runtime home by default.
+  - The provider mirror config lives under ~/.codex-apikey/config.toml by default and records the tutorial values applied to codex3.
   - Saved third-party API key profiles live under ~/.codex3-manager/profiles/.
 `);
 }
@@ -1543,6 +1591,7 @@ async function handleProviderShow(state, args) {
   }
   console.log(`Command name     : ${provider.command_name}`);
   console.log(`Third-party home : ${provider.third_party_home}`);
+  console.log(`Shared Codex home: ${provider.shared_codex_home}`);
   console.log(`Provider name    : ${provider.provider_name}`);
   console.log(`Base URL         : ${provider.base_url}`);
   console.log(`Model            : ${provider.model}`);
@@ -1566,6 +1615,9 @@ async function handleProviderSet(args) {
       index += 1;
     } else if (arg === "--third-party-home") {
       next.third_party_home = parseOptionValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--shared-codex-home") {
+      next.shared_codex_home = parseOptionValue(args, index, arg);
       index += 1;
     } else if (arg === "--provider-name") {
       next.provider_name = parseOptionValue(args, index, arg);

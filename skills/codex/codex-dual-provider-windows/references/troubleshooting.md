@@ -17,15 +17,18 @@ Expected:
 - `codex` reports `provider: openai`.
 - `codex3` reports your third-party provider.
 - `codex3_m` reports no obvious issues, or only warnings you understand.
-- The isolated `config.toml` begins with the tutorial-required provider block, even though it lives under the isolated third-party home instead of the official home.
+- The mirrored third-party `config.toml` under `%userprofile%\\.codex-apikey` contains the tutorial-required provider block.
+- `codex3` reuses the shared runtime home (default `%userprofile%\\.codex`) without rewriting official `auth.json`.
 
 ## Tutorial Mapping Rule
 
 If the provider tutorial shows examples under `%userprofile%\\.codex\\config.toml` and `%userprofile%\\.codex\\auth.json`:
 
 - keep those exact provider values,
-- but write them into the isolated third-party home such as `%userprofile%\\.codex-apikey\\config.toml` and `%userprofile%\\.codex-apikey\\auth.json`,
-- and leave official `~\\.codex` untouched.
+- keep third-party auth under `%userprofile%\\.codex-apikey\\auth.json`,
+- mirror the provider block under `%userprofile%\\.codex-apikey\\config.toml`,
+- run `codex3` against the shared runtime home such as `%userprofile%\\.codex`,
+- and leave official `~\\.codex\\auth.json` untouched.
 
 ## Symptom: `expected value at line 1 column 1`
 
@@ -90,7 +93,7 @@ Write-Output $env:CODEX_HOME
 
 Expected:
 
-- `codex3` still works against the isolated third-party home.
+- `codex3` still works while reusing the shared runtime home.
 - After the command exits, `CODEX_HOME` in the parent PowerShell session is empty or unchanged from its previous value.
 
 ## Symptom: `codex3` uses the official API key or ignores the saved third-party profile
@@ -98,7 +101,7 @@ Expected:
 Likely cause:
 
 - The parent shell exports `OPENAI_API_KEY`.
-- An older wrapper is still installed and does not clear that variable before launching the child codex process.
+- An older wrapper is still installed and does not clear that variable or inject the command-scoped provider env var before launching the child codex process.
 
 Fix:
 
@@ -111,7 +114,7 @@ powershell -ExecutionPolicy Bypass -File scripts/install_windows.ps1
 2. Verify the wrapper contains the isolation restore logic:
 
 ```powershell
-Select-String -Path "$env:APPDATA\npm\codex3.ps1" -Pattern "previousOpenAiApiKey","Remove-Item Env:OPENAI_API_KEY"
+Select-String -Path "$env:APPDATA\npm\codex3.ps1" -Pattern "sharedCodexHome","providerEnvKeyName","previousOpenAiApiKey","Remove-Item Env:OPENAI_API_KEY"
 ```
 
 3. Re-activate the desired profile from `codex3_m`.

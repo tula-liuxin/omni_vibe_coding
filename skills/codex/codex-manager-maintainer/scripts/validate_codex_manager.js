@@ -17,10 +17,14 @@ function resolveManagerHome() {
 }
 
 function resolveOfficialHome() {
+  return path.join(os.homedir(), ".codex");
+}
+
+function resolveEffectiveCodexHome() {
   if (process.env.CODEX_HOME && path.isAbsolute(process.env.CODEX_HOME)) {
     return process.env.CODEX_HOME;
   }
-  return path.join(os.homedir(), ".codex");
+  return resolveOfficialHome();
 }
 
 function readText(filePath) {
@@ -244,6 +248,7 @@ $machine = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "Machine")
 const jsonMode = process.argv.includes("--json");
 const managerHome = resolveManagerHome();
 const officialHome = resolveOfficialHome();
+const effectiveCodexHome = resolveEffectiveCodexHome();
 const launcherDir =
   process.platform === "win32"
     ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
@@ -251,6 +256,12 @@ const launcherDir =
 
 const issues = [];
 const warnings = [...getEnvironmentOpenAiApiKeyWarnings()];
+
+if (path.resolve(effectiveCodexHome) !== path.resolve(officialHome)) {
+  warnings.push(
+    `Current process CODEX_HOME points to ${effectiveCodexHome}, but codex_m validates the official home at ${officialHome}.`,
+  );
+}
 
 const runtimeFiles = [
   path.join(managerHome, "index.mjs"),

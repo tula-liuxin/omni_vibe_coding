@@ -13,10 +13,14 @@ function resolveManagerHome() {
 }
 
 function resolveOfficialHome() {
+  return path.join(os.homedir(), ".codex");
+}
+
+function resolveEffectiveCodexHome() {
   if (process.env.CODEX_HOME && path.isAbsolute(process.env.CODEX_HOME)) {
     return process.env.CODEX_HOME;
   }
-  return path.join(os.homedir(), ".codex");
+  return resolveOfficialHome();
 }
 
 function commandVersion(command) {
@@ -70,6 +74,7 @@ function pathExists(filePath) {
 const homeDir = os.homedir();
 const managerHome = resolveManagerHome();
 const officialHome = resolveOfficialHome();
+const effectiveCodexHome = resolveEffectiveCodexHome();
 const launcherDir =
   process.platform === "win32"
     ? path.join(process.env.APPDATA || path.join(homeDir, "AppData", "Roaming"), "npm")
@@ -100,6 +105,7 @@ const report = {
   paths: {
     homeDir,
     officialHome,
+    effectiveCodexHome,
     officialAuthPath: path.join(officialHome, "auth.json"),
     officialConfigPath: path.join(officialHome, "config.toml"),
     managerHome,

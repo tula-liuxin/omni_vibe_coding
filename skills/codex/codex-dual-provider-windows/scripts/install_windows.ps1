@@ -6,6 +6,7 @@ param(
   [string]$ManagerCommandName = "codex3_m",
   [string]$ThirdPartyCommandName = "codex3",
   [string]$ThirdPartyHome = (Join-Path $env:USERPROFILE ".codex-apikey"),
+  [string]$SharedCodexHome = (Join-Path $env:USERPROFILE ".codex"),
   [string]$ProviderName = "OpenAI",
   [string]$BaseUrl = "https://sub.aimizy.com",
   [string]$Model = "gpt-5.4",
@@ -127,6 +128,7 @@ Write-Utf8NoBom -Path $CmdLauncherPath -Content $CmdContent
 & powershell -NoProfile -ExecutionPolicy Bypass -File $WrapperInstaller `
   -CommandName $ThirdPartyCommandName `
   -ThirdPartyHome $ThirdPartyHome `
+  -SharedCodexHome $SharedCodexHome `
   -ProviderName $ProviderName `
   -BaseUrl $BaseUrl `
   -Model $Model `
@@ -142,6 +144,7 @@ if ($LASTEXITCODE -ne 0) {
 & node $EntryPath provider set `
   --command-name $ThirdPartyCommandName `
   --third-party-home $ThirdPartyHome `
+  --shared-codex-home $SharedCodexHome `
   --provider-name $ProviderName `
   --base-url $BaseUrl `
   --model $Model `
@@ -161,6 +164,7 @@ Write-Host "Manager PS1      : $Ps1LauncherPath"
 Write-Host "Manager CMD      : $CmdLauncherPath"
 Write-Host "Third-party cmd  : $ThirdPartyCommandName"
 Write-Host "Third-party home : $ThirdPartyHome"
+Write-Host "Shared Codex home: $SharedCodexHome"
 Write-Host "Provider         : $ProviderName"
 Write-Host "Base URL         : $BaseUrl"
 Write-Host "Model            : $Model"
