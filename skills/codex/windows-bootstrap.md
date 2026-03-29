@@ -161,8 +161,24 @@ codex3_m provider set `
 - `~/.codex-apikey/auth.json`
 - `~/.codex-apikey/config.toml`
 - `~/.codex3-manager/profiles/`
+- `~/.codex/sessions`
+- `~/.codex/archived_sessions`
 
 默认设计下，它不会去改写官方 `~/.codex` 的常规身份数据；只有你显式执行 plain `codex` bridge 时，才会临时影响普通 `codex` 的载体文件。
+从当前实现开始，`codex3` 默认共享官方 home 里的 `sessions/` 和 `archived_sessions/`，但仍然把第三方 auth/config 保持在 `~/.codex-apikey`。
+
+如果第三方网关在 Responses WebSocket 路径上不稳定，可以后续切到：
+
+```powershell
+codex3_m mode set stable-http
+```
+
+模式说明：
+
+- `compat`
+  优先让 recent session 可见性更接近官方 `openai` lane。
+- `stable-http`
+  优先关闭第三方 lane 的 websocket 路径，通常更稳更快，但 recent session 列表会按 provider id 分开。
 
 ## 7. 什么时候该用 plain `codex`，什么时候该用 `codex3`
 

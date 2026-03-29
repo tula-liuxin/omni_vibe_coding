@@ -7,7 +7,8 @@ param(
   [string]$ThirdPartyCommandName = "codex3",
   [string]$ThirdPartyHome = (Join-Path $env:USERPROFILE ".codex-apikey"),
   [string]$SharedCodexHome = (Join-Path $env:USERPROFILE ".codex"),
-  [string]$ProviderName = "OpenAI",
+  [ValidateSet("compat", "stable-http")][string]$Mode = "compat",
+  [string]$ProviderName = "openai",
   [string]$BaseUrl = "https://sub.aimizy.com",
   [string]$Model = "gpt-5.4",
   [string]$ReviewModel = "gpt-5.4",
@@ -61,6 +62,12 @@ $ResolvedSkillRoot = (Resolve-Path $SkillRoot).Path
 $AssetRoot = Join-Path $ResolvedSkillRoot "assets\\windows-runtime"
 $WrapperInstaller = Join-Path $ResolvedSkillRoot "scripts\\install_codex3_wrapper.ps1"
 $ManagerScriptsDir = Join-Path $ManagerHome "scripts"
+$EffectiveProviderName =
+  if ($Mode -eq "stable-http") {
+    "sub2api"
+  } else {
+    "openai"
+  }
 
 foreach ($RequiredAsset in @("index.mjs", "package.json", "package-lock.json")) {
   $AssetPath = Join-Path $AssetRoot $RequiredAsset
@@ -129,7 +136,7 @@ Write-Utf8NoBom -Path $CmdLauncherPath -Content $CmdContent
   -CommandName $ThirdPartyCommandName `
   -ThirdPartyHome $ThirdPartyHome `
   -SharedCodexHome $SharedCodexHome `
-  -ProviderName $ProviderName `
+  -ProviderName $EffectiveProviderName `
   -BaseUrl $BaseUrl `
   -Model $Model `
   -ReviewModel $ReviewModel `
@@ -142,10 +149,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 & node $EntryPath provider set `
+  --mode $Mode `
   --command-name $ThirdPartyCommandName `
   --third-party-home $ThirdPartyHome `
   --shared-codex-home $SharedCodexHome `
-  --provider-name $ProviderName `
+  --provider-name $EffectiveProviderName `
   --base-url $BaseUrl `
   --model $Model `
   --review-model $ReviewModel `
@@ -165,6 +173,7 @@ Write-Host "Manager CMD      : $CmdLauncherPath"
 Write-Host "Third-party cmd  : $ThirdPartyCommandName"
 Write-Host "Third-party home : $ThirdPartyHome"
 Write-Host "Shared Codex home: $SharedCodexHome"
-Write-Host "Provider         : $ProviderName"
+Write-Host "Mode             : $Mode"
+Write-Host "Provider         : $EffectiveProviderName"
 Write-Host "Base URL         : $BaseUrl"
 Write-Host "Model            : $Model"

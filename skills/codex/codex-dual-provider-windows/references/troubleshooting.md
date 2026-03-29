@@ -20,8 +20,40 @@ Expected:
 - `codex3` reports your third-party provider.
 - `codex3_m` reports no obvious issues, or only warnings you understand.
 - The mirrored third-party `config.toml` under `%userprofile%\\.codex-apikey` contains the tutorial-required provider block.
-- `codex3` uses the third-party home under `%userprofile%\\.codex-apikey`.
+- `codex3` keeps third-party auth/config under `%userprofile%\\.codex-apikey`.
+- `codex3` shares `sessions/` and `archived_sessions/` from the shared Codex home under `%userprofile%\\.codex`.
 - `codex3_m use-codex3 --force` is the thing that temporarily bridges plain `codex` into the third-party lane.
+
+## Symptom: `codex3` is slow or keeps showing `Reconnecting...`
+
+Likely cause:
+
+- The current provider mode is `compat`, which keeps provider id compatibility with the built-in `openai` lane but may trigger websocket reconnects on some third-party gateways.
+
+Fix:
+
+1. Switch to the HTTP-stable mode:
+
+```powershell
+codex3_m mode set stable-http
+```
+
+2. Verify:
+
+```powershell
+codex3_m mode show
+codex3 exec --skip-git-repo-check "hello"
+```
+
+Expected:
+
+- `codex3_m mode show` reports `stable-http`
+- `codex3` reports provider `sub2api`
+- websocket reconnect noise should reduce or disappear on gateways that do not handle the websocket path well
+
+Tradeoff:
+
+- `stable-http` improves gateway stability, but recent session lists will no longer line up as closely with the built-in `openai` lane.
 
 ## Tutorial Mapping Rule
 
@@ -30,9 +62,34 @@ If the provider tutorial shows examples under `%userprofile%\\.codex\\config.tom
 - keep those exact provider values,
 - keep third-party auth under `%userprofile%\\.codex-apikey\\auth.json`,
 - mirror the provider block under `%userprofile%\\.codex-apikey\\config.toml`,
-- run `codex3` against that third-party home,
+- run `codex3` with that third-party auth/config while sharing session directories from `%userprofile%\\.codex`,
 - use the manager quick action only when you want plain `codex` to follow the third-party lane,
 - and leave official `~\\.codex\\auth.json` untouched.
+
+## Symptom: `codex3` does not see sessions created by plain `codex`
+
+Likely cause:
+
+- The shared session junctions under `%userprofile%\\.codex-apikey` were never created or were replaced by a normal directory.
+
+Fix:
+
+1. Re-run the wrapper installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_codex3_wrapper.ps1
+```
+
+2. Validate that the third-party home now resolves its session dirs into the shared home:
+
+```powershell
+node scripts/validate_codex3_manager.js
+```
+
+Expected:
+
+- `%userprofile%\\.codex-apikey\\sessions` resolves to `%userprofile%\\.codex\\sessions`
+- `%userprofile%\\.codex-apikey\\archived_sessions` resolves to `%userprofile%\\.codex\\archived_sessions`
 
 ## Symptom: `expected value at line 1 column 1`
 

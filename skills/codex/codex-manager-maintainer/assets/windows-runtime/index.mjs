@@ -12,6 +12,32 @@ import enquirer from "enquirer";
 
 const { Select, Input, Confirm, Password } = enquirer;
 
+function isIgnorablePromptCloseError(error) {
+  return error && typeof error === "object" && error.code === "ERR_USE_AFTER_CLOSE";
+}
+
+function installPromptCloseGuards() {
+  process.on("uncaughtException", (error) => {
+    if (isIgnorablePromptCloseError(error)) {
+      process.exitCode = 0;
+      return;
+    }
+    console.error(`Error: ${error.message || error}`);
+    process.exit(1);
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    if (isIgnorablePromptCloseError(reason)) {
+      process.exitCode = 0;
+      return;
+    }
+    console.error(`Error: ${reason?.message || reason}`);
+    process.exit(1);
+  });
+}
+
+installPromptCloseGuards();
+
 const VERSION = 3;
 const MANAGER_HOME = path.join(os.homedir(), ".codex-manager");
 const STATE_PATH = path.join(MANAGER_HOME, "state.json");

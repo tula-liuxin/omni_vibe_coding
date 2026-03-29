@@ -21,6 +21,58 @@ function readText(filePath) {
   return fs.readFileSync(filePath, "utf8");
 }
 
+function safeRealPath(filePath) {
+  try {
+    if (typeof fs.realpathSync.native === "function") {
+      return fs.realpathSync.native(filePath);
+    }
+    return fs.realpathSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function pathResolvesTo(filePath, targetPath) {
+  const left = safeRealPath(filePath);
+  const right = safeRealPath(targetPath);
+  if (!left || !right) {
+    return false;
+  }
+  return path.resolve(left) === path.resolve(right);
+}
+
+function usesBuiltInOpenAiProvider(provider) {
+  return String(provider?.provider_name || "").trim().toLowerCase() === "openai";
+}
+
+function effectiveOpenAiBaseUrl(provider) {
+  const trimmed = String(provider?.base_url || "").trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    return "";
+  }
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+}
+
+const PROVIDER_MODE_COMPAT = "compat";
+const PROVIDER_MODE_STABLE_HTTP = "stable_http";
+const DEFAULT_STABLE_HTTP_PROVIDER_ID = "sub2api";
+
+function normalizeProviderMode(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
+  return normalized === PROVIDER_MODE_STABLE_HTTP
+    ? PROVIDER_MODE_STABLE_HTTP
+    : PROVIDER_MODE_COMPAT;
+}
+
+function normalizeProvider(provider = {}) {
+  const mode = normalizeProviderMode(provider.mode || PROVIDER_MODE_COMPAT);
+  return {
+    ...provider,
+    mode,
+    provider_name: mode === PROVIDER_MODE_COMPAT ? "openai" : DEFAULT_STABLE_HTTP_PROVIDER_ID,
+  };
+}
+
 function detectAuthKind(authData) {
   if (
     authData?.auth_mode === "apikey" ||
@@ -65,6 +117,7 @@ const launcherDir =
 
 const issues = [];
 const warnings = [];
+const sharedSessionRelativePaths = ["sessions", "archived_sessions"];
 const plainCodexModeState = readPlainCodexModeState(managerHome);
 const plainCodexMode = plainCodexModeState?.mode || "official";
 
@@ -107,7 +160,8 @@ let provider = {
   command_name: "codex3",
   third_party_home: path.join(os.homedir(), ".codex-apikey"),
   shared_codex_home: path.join(os.homedir(), ".codex"),
-  provider_name: "OpenAI",
+  mode: PROVIDER_MODE_COMPAT,
+  provider_name: "openai",
   base_url: "https://sub.aimizy.com",
   model: "gpt-5.4",
   review_model: "gpt-5.4",
@@ -117,10 +171,10 @@ let provider = {
 };
 
 if (state?.provider && typeof state.provider === "object") {
-  provider = {
+  provider = normalizeProvider({
     ...provider,
     ...state.provider,
-  };
+  });
 }
 
 for (const wrapperFile of [
@@ -148,6 +202,24 @@ if (path.resolve(provider.third_party_home) === path.resolve(provider.shared_cod
 
 if (!pathExists(provider.shared_codex_home)) {
   warnings.push(`Shared Codex home does not exist yet: ${provider.shared_codex_home}`);
+}
+
+for (const relativePath of sharedSessionRelativePaths) {
+  const targetPath = path.join(provider.shared_codex_home, relativePath);
+  const linkPath = path.join(provider.third_party_home, relativePath);
+  if (!pathExists(targetPath)) {
+    warnings.push(`Shared session target does not exist yet: ${targetPath}`);
+    continue;
+  }
+  if (!pathExists(linkPath)) {
+    issues.push(`Shared session path is missing from third-party home: ${linkPath}`);
+    continue;
+  }
+  if (!pathResolvesTo(linkPath, targetPath)) {
+    issues.push(
+      `Shared session path does not resolve to the shared Codex home: ${linkPath} -> ${targetPath}`,
+    );
+  }
 }
 
 if (state && state.profiles && typeof state.profiles === "object") {
@@ -179,17 +251,30 @@ if (!pathExists(thirdPartyConfigPath)) {
   issues.push(`Missing third-party config: ${thirdPartyConfigPath}`);
 } else {
   const configText = readText(thirdPartyConfigPath);
-  for (const snippet of [
-    'cli_auth_credentials_store = "file"',
-    `model_provider = "${provider.provider_name}"`,
-    `model = "${provider.model}"`,
-    `review_model = "${provider.review_model}"`,
-    `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
-    `model_context_window = ${provider.model_context_window}`,
-    `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
-    `base_url = "${provider.base_url}"`,
-    "requires_openai_auth = true",
-  ]) {
+  const requiredSnippets = usesBuiltInOpenAiProvider(provider)
+    ? [
+        'cli_auth_credentials_store = "file"',
+        'model_provider = "openai"',
+        `openai_base_url = "${effectiveOpenAiBaseUrl(provider)}"`,
+        `model = "${provider.model}"`,
+        `review_model = "${provider.review_model}"`,
+        `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
+        `model_context_window = ${provider.model_context_window}`,
+        `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
+      ]
+      : [
+        'cli_auth_credentials_store = "file"',
+        `model_provider = "${provider.provider_name}"`,
+        `model = "${provider.model}"`,
+        `review_model = "${provider.review_model}"`,
+        `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
+        `model_context_window = ${provider.model_context_window}`,
+        `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
+        `base_url = "${provider.base_url}"`,
+        "requires_openai_auth = true",
+        "supports_websockets = false",
+      ];
+  for (const snippet of requiredSnippets) {
     if (!configText.includes(snippet)) {
       issues.push(`Third-party config is missing expected setting: ${snippet}`);
     }

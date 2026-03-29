@@ -40,9 +40,9 @@
 - `codex_m`
   管理官方身份。它切换的是普通 `codex.exe` 使用的官方 auth/config 载体，不会把整套 `~/.codex` 当成可任意替换的家目录。
 - `codex3`
-  是单独的第三方 wrapper 命令。它默认把第三方 auth 和 provider 镜像配置放在 `~/.codex-apikey`。
+  是单独的第三方 wrapper 命令。它默认把第三方 auth 和 provider 镜像配置放在 `~/.codex-apikey`，并把会话目录共享到 `~/.codex`。
 - `codex3_m`
-  管理第三方 API key profile、provider 参数，以及“临时让 plain codex 跟随第三方”的桥接动作。
+  管理第三方 API key profile、provider 参数、`compat` / `stable-http` 模式切换，以及“临时让 plain codex 跟随第三方”的桥接动作。
 - `codex-manager-maintainer`
   是给 Codex agent 用的维护型 skill，对应 `codex_m` 这条官方链路。
 - `codex-dual-provider-windows`
