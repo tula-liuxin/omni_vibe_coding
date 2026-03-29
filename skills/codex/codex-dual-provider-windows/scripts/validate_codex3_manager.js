@@ -4,6 +4,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+let DatabaseSync = null;
+try {
+  ({ DatabaseSync } = require("node:sqlite"));
+} catch {
+  DatabaseSync = null;
+}
 
 function pathExists(filePath) {
   try {
@@ -39,6 +45,99 @@ function pathResolvesTo(filePath, targetPath) {
     return false;
   }
   return path.resolve(left) === path.resolve(right);
+}
+
+function filesShareIdentity(filePath, targetPath) {
+  try {
+    const left = fs.statSync(filePath);
+    const right = fs.statSync(targetPath);
+    return (
+      Number.isFinite(left.dev) &&
+      Number.isFinite(left.ino) &&
+      Number.isFinite(right.dev) &&
+      Number.isFinite(right.ino) &&
+      left.dev === right.dev &&
+      left.ino === right.ino
+    );
+  } catch {
+    return false;
+  }
+}
+
+function inspectThreadIndex(homePath) {
+  const dbPath = path.join(homePath, "state_5.sqlite");
+  if (!pathExists(dbPath) || !DatabaseSync) {
+    return null;
+  }
+
+  function readSummary(openPath) {
+    let db = null;
+    try {
+      db = new DatabaseSync(openPath, { readonly: true });
+      const tableRow = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'threads'")
+        .get();
+      if (!tableRow) {
+        return null;
+      }
+
+      const threadCount = db.prepare("SELECT COUNT(*) AS count FROM threads").get()?.count ?? 0;
+      const cwdCounts = db
+        .prepare(
+          `
+            SELECT cwd, COUNT(*) AS count
+            FROM threads
+            GROUP BY cwd
+            ORDER BY count DESC, cwd ASC
+            LIMIT 3
+          `,
+        )
+        .all()
+        .map((row) => ({
+          cwd: row.cwd,
+          count: row.count,
+        }));
+
+      return {
+        dbPath,
+        inspectedPath: openPath,
+        threadCount,
+        cwdCounts,
+      };
+    } finally {
+      if (db) {
+        db.close();
+      }
+    }
+  }
+
+  try {
+    return readSummary(dbPath);
+  } catch (error) {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex3-thread-index-"));
+    const copiedDbPath = path.join(tmpDir, "state_5.sqlite");
+    try {
+      fs.copyFileSync(dbPath, copiedDbPath);
+      for (const suffix of ["-wal", "-shm"]) {
+        const sidecar = `${dbPath}${suffix}`;
+        if (pathExists(sidecar)) {
+          fs.copyFileSync(sidecar, `${copiedDbPath}${suffix}`);
+        }
+      }
+      return readSummary(copiedDbPath);
+    } catch (copiedError) {
+      return {
+        dbPath,
+        error: `${error.message}; copy retry failed: ${copiedError.message}`,
+      };
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup failures in diagnostics
+      }
+    }
+  }
 }
 
 function usesBuiltInOpenAiProvider(provider) {
@@ -118,6 +217,7 @@ const launcherDir =
 const issues = [];
 const warnings = [];
 const sharedSessionRelativePaths = ["sessions", "archived_sessions"];
+const sharedSessionIndexFile = "session_index.jsonl";
 const plainCodexModeState = readPlainCodexModeState(managerHome);
 const plainCodexMode = plainCodexModeState?.mode || "official";
 
@@ -312,6 +412,37 @@ if (pathExists(wrapperPs1Path)) {
   }
 }
 
+const sessionIndexTargetPath = path.join(provider.shared_codex_home, sharedSessionIndexFile);
+const sessionIndexLinkPath = path.join(provider.third_party_home, sharedSessionIndexFile);
+if (!pathExists(sessionIndexTargetPath)) {
+  warnings.push(`Shared session index target does not exist yet: ${sessionIndexTargetPath}`);
+} else if (!pathExists(sessionIndexLinkPath)) {
+  issues.push(`Shared session index is missing from third-party home: ${sessionIndexLinkPath}`);
+} else if (!filesShareIdentity(sessionIndexLinkPath, sessionIndexTargetPath)) {
+  issues.push(
+    `Shared session index is not hard-linked to the shared Codex home: ${sessionIndexLinkPath} -> ${sessionIndexTargetPath}`,
+  );
+}
+
+const thirdPartyThreadIndex = inspectThreadIndex(provider.third_party_home);
+if (thirdPartyThreadIndex?.error) {
+  warnings.push(
+    `Could not inspect third-party thread index at ${thirdPartyThreadIndex.dbPath}: ${thirdPartyThreadIndex.error}`,
+  );
+} else if (thirdPartyThreadIndex?.threadCount > 0) {
+  warnings.push(
+    "Recent Codex builds keep sidebar/thread metadata in state_5.sqlite per CODEX_HOME. codex3 can therefore have a separate thread list even when sessions, archived_sessions, and session_index.jsonl are shared.",
+  );
+  if (thirdPartyThreadIndex.cwdCounts.length > 0) {
+    const samples = thirdPartyThreadIndex.cwdCounts
+      .map((entry) => `${entry.cwd} (${entry.count})`)
+      .join(", ");
+    warnings.push(
+      `Current codex3 thread cwd samples from ${thirdPartyThreadIndex.dbPath}: ${samples}. Workspace-filtered sidebars only show threads whose cwd matches the active workspace.`,
+    );
+  }
+}
+
 if (process.platform === "win32") {
   const result = spawnSync(
     "powershell",
@@ -343,7 +474,7 @@ if (process.platform === "win32") {
 
 if (plainCodexMode === "third_party") {
   warnings.push(
-    "Plain codex is currently bridged to the third-party provider. That bridge is separate from codex3's own isolated auth/config path.",
+    "Desktop is currently following the third-party lane. That bridge is separate from codex3's own isolated auth/config path.",
   );
 }
 
@@ -363,7 +494,7 @@ const payload = {
 if (jsonMode) {
   console.log(JSON.stringify(payload, null, 2));
 } else if (issues.length === 0) {
-  console.log("No obvious issues found.");
+  console.log("No blocking issues found for the third-party lane.");
   warnings.forEach((warning) => console.log(`Warning: ${warning}`));
 } else {
   console.log("Issues found:");

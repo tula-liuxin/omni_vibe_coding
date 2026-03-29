@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Manager Maintainer"
-  short_description: "Install, repair, and upgrade codex_m with platform-aware guides"
-  default_prompt: "Use $codex-manager-maintainer to install, repair, or upgrade codex_m on this machine with platform-aware steps."
+  short_description: "Maintain codex_m as the official identity manager across platforms"
+  default_prompt: "Use $codex-manager-maintainer to maintain codex_m as the official Codex identity manager on this machine."

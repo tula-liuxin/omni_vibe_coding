@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { DatabaseSync } from "node:sqlite";
 import enquirer from "enquirer";
 
 const { Select, Input, Confirm, Password } = enquirer;
@@ -56,6 +57,19 @@ const PLAIN_CODEX_BACKUP_CONFIG_PATH = path.join(
 const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
 const OFFICIAL_AUTH_PATH = path.join(OFFICIAL_HOME, "auth.json");
 const OFFICIAL_CONFIG_PATH = path.join(OFFICIAL_HOME, "config.toml");
+const OFFICIAL_CLI_HOME = path.join(os.homedir(), ".codex-official");
+const OFFICIAL_CLI_AUTH_PATH = path.join(OFFICIAL_CLI_HOME, "auth.json");
+const OFFICIAL_CLI_CONFIG_PATH = path.join(OFFICIAL_CLI_HOME, "config.toml");
+const THIRD_PARTY_MANAGER_STATE_PATH = path.join(os.homedir(), ".codex3-manager", "state.json");
+const OFFICIAL_CLI_SHARED_DIRECTORIES = [
+  "sessions",
+  "archived_sessions",
+  "skills",
+  "memories",
+  "rules",
+  "vendor_imports",
+];
+const OFFICIAL_CLI_SHARED_FILES = ["session_index.jsonl"];
 
 const MANAGED_CONFIG_KEYS = {
   cli_auth_credentials_store: '"file"',
@@ -93,6 +107,505 @@ function pathExists(filePath) {
     return fs.existsSync(filePath);
   } catch {
     return false;
+  }
+}
+
+function readJsonIfExists(filePath) {
+  if (!pathExists(filePath)) {
+    return null;
+  }
+  try {
+    return readJson(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function readRecentSessionIndexEntries(homePath) {
+  const entries = [];
+  const filePath = path.join(homePath, "session_index.jsonl");
+  if (!pathExists(filePath)) {
+    return entries;
+  }
+
+  const text = readText(filePath);
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed?.id) {
+        entries.push(parsed);
+      }
+    } catch {
+      // ignore malformed recent-session index lines
+    }
+  }
+  return entries;
+}
+
+function findRecentRolloutsById(sharedHome, wantedIds) {
+  const found = new Map();
+  const wanted = new Set(wantedIds.filter(Boolean));
+  if (!wanted.size) {
+    return found;
+  }
+
+  for (const bucketName of ["sessions", "archived_sessions"]) {
+    const root = path.join(sharedHome, bucketName);
+    if (!pathExists(root)) {
+      continue;
+    }
+
+    const stack = [root];
+    while (stack.length && found.size < wanted.size) {
+      const current = stack.pop();
+      const entries = fs.readdirSync(current, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+        if (!entry.isFile() || !/^rollout-.*\.jsonl$/i.test(entry.name)) {
+          continue;
+        }
+
+        const match = entry.name.match(
+          /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+        );
+        const rolloutId = match?.[1];
+        if (!rolloutId || !wanted.has(rolloutId)) {
+          continue;
+        }
+
+        found.set(rolloutId, {
+          bucketName,
+          root,
+          fullPath,
+        });
+      }
+    }
+  }
+
+  return found;
+}
+
+function toUnixTimestampSeconds(value) {
+  const parsed = Date.parse(value || "");
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.floor(parsed / 1000);
+}
+
+function extractTextContent(content) {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .filter((item) => item?.type === "input_text" || item?.type === "output_text")
+    .map((item) => String(item.text || ""))
+    .join("\n")
+    .trim();
+}
+
+function readRolloutPreviewText(rolloutPath, maxBytes = 256 * 1024) {
+  const handle = fs.openSync(rolloutPath, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const bytesRead = fs.readSync(handle, buffer, 0, maxBytes, 0);
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function copyDatabaseWithSidecars(sourceDbPath, destDbPath) {
+  fs.copyFileSync(sourceDbPath, destDbPath);
+  for (const suffix of ["-wal", "-shm"]) {
+    const sourceSidecar = `${sourceDbPath}${suffix}`;
+    if (pathExists(sourceSidecar)) {
+      fs.copyFileSync(sourceSidecar, `${destDbPath}${suffix}`);
+    }
+  }
+}
+
+function removeDatabaseSidecars(dbPath) {
+  for (const suffix of ["-wal", "-shm"]) {
+    const sidecarPath = `${dbPath}${suffix}`;
+    if (pathExists(sidecarPath)) {
+      fs.rmSync(sidecarPath, { force: true });
+    }
+  }
+}
+
+function safeRealPath(filePath) {
+  try {
+    return typeof fs.realpathSync.native === "function"
+      ? fs.realpathSync.native(filePath)
+      : fs.realpathSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function moveAsidePath(filePath) {
+  if (!pathExists(filePath)) {
+    return;
+  }
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  fs.renameSync(filePath, `${filePath}.pre-shared-${timestamp}`);
+}
+
+function ensureDirectoryJunction(linkPath, targetPath) {
+  ensureDir(targetPath);
+  const linkRealPath = safeRealPath(linkPath);
+  const targetRealPath = safeRealPath(targetPath);
+  if (linkRealPath && targetRealPath && path.resolve(linkRealPath) === path.resolve(targetRealPath)) {
+    return;
+  }
+  moveAsidePath(linkPath);
+  fs.symlinkSync(targetPath, linkPath, "junction");
+}
+
+function ensureFileHardLink(linkPath, targetPath) {
+  ensureDir(path.dirname(targetPath));
+  if (!pathExists(targetPath)) {
+    fs.writeFileSync(targetPath, "", "utf8");
+  }
+  const linkRealPath = safeRealPath(linkPath);
+  const targetRealPath = safeRealPath(targetPath);
+  if (linkRealPath && targetRealPath && path.resolve(linkRealPath) === path.resolve(targetRealPath)) {
+    return;
+  }
+  moveAsidePath(linkPath);
+  fs.linkSync(targetPath, linkPath);
+}
+
+function ensureOfficialCliHomeLayout() {
+  ensureDir(OFFICIAL_CLI_HOME);
+  for (const relativePath of OFFICIAL_CLI_SHARED_DIRECTORIES) {
+    ensureDirectoryJunction(
+      path.join(OFFICIAL_CLI_HOME, relativePath),
+      path.join(OFFICIAL_HOME, relativePath),
+    );
+  }
+  for (const relativePath of OFFICIAL_CLI_SHARED_FILES) {
+    ensureFileHardLink(
+      path.join(OFFICIAL_CLI_HOME, relativePath),
+      path.join(OFFICIAL_HOME, relativePath),
+    );
+  }
+}
+
+function getThirdPartyHomeFromState() {
+  const state = readJsonIfExists(THIRD_PARTY_MANAGER_STATE_PATH);
+  const configured = state?.provider?.third_party_home;
+  return configured ? path.resolve(String(configured)) : path.join(os.homedir(), ".codex-apikey");
+}
+
+function getManagedThreadSyncTargets() {
+  const targets = [OFFICIAL_HOME, OFFICIAL_CLI_HOME];
+  const thirdPartyHome = getThirdPartyHomeFromState();
+  if (thirdPartyHome && !targets.includes(thirdPartyHome) && pathExists(thirdPartyHome)) {
+    targets.push(thirdPartyHome);
+  }
+  return targets;
+}
+
+function syncManagedThreadMetadata({ scope = "recent" } = {}) {
+  const results = [];
+  for (const targetHome of getManagedThreadSyncTargets()) {
+    try {
+      results.push({
+        targetHome,
+        ...syncSharedThreadMetadata(OFFICIAL_HOME, targetHome, { scope }),
+      });
+    } catch (error) {
+      if (targetHome === OFFICIAL_HOME && pathExists(path.join(OFFICIAL_CLI_HOME, "state_5.sqlite"))) {
+        try {
+          removeDatabaseSidecars(path.join(OFFICIAL_HOME, "state_5.sqlite"));
+          fs.copyFileSync(
+            path.join(OFFICIAL_CLI_HOME, "state_5.sqlite"),
+            path.join(OFFICIAL_HOME, "state_5.sqlite"),
+          );
+          results.push({
+            targetHome,
+            scanned: 0,
+            upserted: 0,
+            scope,
+            mirrored_from: OFFICIAL_CLI_HOME,
+          });
+          continue;
+        } catch {
+          // fall through to normal error reporting
+        }
+      }
+      results.push({
+        targetHome,
+        scanned: 0,
+        upserted: 0,
+        scope,
+        error: error.message,
+      });
+    }
+  }
+  return results;
+}
+
+function findLatestStateDbBackup() {
+  if (!pathExists(BACKUPS_DIR)) {
+    return null;
+  }
+  const backups = fs
+    .readdirSync(BACKUPS_DIR)
+    .filter((name) => /^state_5\.sqlite\..*\.bak$/i.test(name))
+    .sort();
+  if (!backups.length) {
+    return null;
+  }
+  return path.join(BACKUPS_DIR, backups[backups.length - 1]);
+}
+
+function parseThreadRowFromRollout(rolloutPath, fallbackTitle) {
+  const text = readRolloutPreviewText(rolloutPath);
+  const lines = text.split(/\r?\n/);
+
+  let sessionMeta = null;
+  let turnContext = null;
+  let firstUserMessage = "";
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (!sessionMeta && parsed.type === "session_meta") {
+      sessionMeta = parsed.payload || null;
+      continue;
+    }
+
+    if (!turnContext && parsed.type === "turn_context") {
+      turnContext = parsed.payload || null;
+      continue;
+    }
+
+    if (!firstUserMessage && parsed.type === "response_item" && parsed.payload?.role === "user") {
+      firstUserMessage = extractTextContent(parsed.payload.content);
+    }
+
+    if (sessionMeta && turnContext && firstUserMessage) {
+      break;
+    }
+  }
+
+  const createdAtIso = sessionMeta?.timestamp || null;
+  return {
+    id: sessionMeta?.id || null,
+    created_at: toUnixTimestampSeconds(createdAtIso),
+    updated_at: toUnixTimestampSeconds(createdAtIso),
+    source: String(sessionMeta?.source || "cli"),
+    model_provider: String(sessionMeta?.model_provider || ""),
+    cwd: String(sessionMeta?.cwd || turnContext?.cwd || ""),
+    title: fallbackTitle || firstUserMessage || sessionMeta?.id || path.basename(rolloutPath),
+    sandbox_policy: JSON.stringify(turnContext?.sandbox_policy || { type: "workspace-write" }),
+    approval_mode: String(turnContext?.approval_policy || "on-request"),
+    tokens_used: 0,
+    has_user_event: firstUserMessage ? 1 : 0,
+    archived: 0,
+    archived_at: null,
+    git_sha: sessionMeta?.git?.sha || null,
+    git_branch: sessionMeta?.git?.branch || null,
+    git_origin_url: sessionMeta?.git?.origin_url || null,
+    cli_version: String(sessionMeta?.cli_version || ""),
+    first_user_message: firstUserMessage || "",
+    agent_nickname: null,
+    agent_role: null,
+    memory_mode: String(turnContext?.memory_mode || "enabled"),
+    model: turnContext?.model || null,
+    reasoning_effort: turnContext?.effort || null,
+  };
+}
+
+function buildRecentSharedThreadRows(sharedHome, targetHome) {
+  const indexEntries = readRecentSessionIndexEntries(sharedHome);
+  const found = findRecentRolloutsById(
+    sharedHome,
+    indexEntries.map((entry) => entry.id),
+  );
+  const rows = [];
+
+  for (const entry of indexEntries) {
+    const located = found.get(entry.id);
+    if (!located) {
+      continue;
+    }
+
+    const row = parseThreadRowFromRollout(located.fullPath, entry.thread_name || "");
+    if (!row.id) {
+      continue;
+    }
+
+    row.archived = located.bucketName === "archived_sessions" ? 1 : 0;
+    row.archived_at = row.archived ? row.updated_at : null;
+    row.updated_at = Math.max(row.updated_at, toUnixTimestampSeconds(entry.updated_at || ""));
+    row.title = entry.thread_name || row.title;
+    row.rollout_path = path.join(
+      targetHome,
+      located.bucketName,
+      path.relative(located.root, located.fullPath),
+    );
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function buildAllSharedThreadRows(sharedHome, targetHome) {
+  const indexEntries = readRecentSessionIndexEntries(sharedHome);
+  const indexById = new Map(indexEntries.map((entry) => [entry.id, entry]));
+  const rows = [];
+
+  for (const bucketName of ["sessions", "archived_sessions"]) {
+    const root = path.join(sharedHome, bucketName);
+    if (!pathExists(root)) {
+      continue;
+    }
+
+    const stack = [root];
+    while (stack.length) {
+      const current = stack.pop();
+      const entries = fs.readdirSync(current, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+        if (!entry.isFile() || !/^rollout-.*\.jsonl$/i.test(entry.name)) {
+          continue;
+        }
+
+        const match = entry.name.match(
+          /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+        );
+        const rolloutId = match?.[1];
+        const indexEntry = rolloutId ? indexById.get(rolloutId) : null;
+
+        const row = parseThreadRowFromRollout(fullPath, indexEntry?.thread_name || "");
+        if (!row.id) {
+          continue;
+        }
+
+        row.archived = bucketName === "archived_sessions" ? 1 : 0;
+        row.archived_at = row.archived ? row.updated_at : null;
+        row.updated_at = Math.max(row.updated_at, toUnixTimestampSeconds(indexEntry?.updated_at || ""));
+        row.title = indexEntry?.thread_name || row.title;
+        row.rollout_path = path.join(targetHome, bucketName, path.relative(root, fullPath));
+        rows.push(row);
+      }
+    }
+  }
+
+  return rows;
+}
+
+function syncSharedThreadMetadata(sharedHome, targetHome, { scope = "recent" } = {}) {
+  const targetDbPath = path.join(targetHome, "state_5.sqlite");
+  if (!pathExists(targetDbPath)) {
+    return { scanned: 0, upserted: 0, skipped: "missing_state_db" };
+  }
+
+  const rows =
+    scope === "all"
+      ? buildAllSharedThreadRows(sharedHome, targetHome)
+      : buildRecentSharedThreadRows(sharedHome, targetHome);
+  if (!rows.length) {
+    return { scanned: 0, upserted: 0, skipped: "no_recent_threads" };
+  }
+
+  function applyRows(dbPath) {
+    const db = new DatabaseSync(dbPath);
+    try {
+      const columns = db.prepare(`PRAGMA table_info("threads")`).all().map((row) => row.name);
+      if (!columns.length) {
+        return { scanned: rows.length, upserted: 0, skipped: "missing_threads_table" };
+      }
+
+      const usableColumns = columns.filter((name) =>
+        rows.some((row) => Object.hasOwn(row, name)),
+      );
+      const placeholders = usableColumns.map(() => "?").join(", ");
+      const updateClause = usableColumns
+        .filter((name) => name !== "id")
+        .map((name) => `${name} = excluded.${name}`)
+        .join(", ");
+
+      const sql = `
+        INSERT INTO threads (${usableColumns.join(", ")})
+        VALUES (${placeholders})
+        ON CONFLICT(id) DO UPDATE SET ${updateClause}
+      `;
+      const statement = db.prepare(sql);
+
+      db.exec("BEGIN");
+      try {
+        for (const row of rows) {
+          statement.run(
+            ...usableColumns.map((name) => (Object.hasOwn(row, name) ? row[name] : null)),
+          );
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+
+      return { scanned: rows.length, upserted: rows.length, scope };
+    } finally {
+      db.close();
+    }
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-thread-sync-"));
+  const tmpDbPath = path.join(tmpDir, "state_5.sqlite");
+  try {
+    try {
+      copyDatabaseWithSidecars(targetDbPath, tmpDbPath);
+      const result = applyRows(tmpDbPath);
+      removeDatabaseSidecars(targetDbPath);
+      fs.copyFileSync(tmpDbPath, targetDbPath);
+      return {
+        ...result,
+        repaired_from_copy: true,
+      };
+    } catch (copyError) {
+      const backupDbPath = findLatestStateDbBackup();
+      if (!backupDbPath) {
+        throw copyError;
+      }
+      copyDatabaseWithSidecars(backupDbPath, tmpDbPath);
+      const result = applyRows(tmpDbPath);
+      removeDatabaseSidecars(targetDbPath);
+      fs.copyFileSync(tmpDbPath, targetDbPath);
+      return {
+        ...result,
+        repaired_from_backup: true,
+        copy_error: copyError.message,
+        backup_db_path: backupDbPath,
+      };
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 
@@ -1020,12 +1533,34 @@ function writeManagedTopLevelTomlKeys(text, entries) {
   return outputLines.join("\n").replace(/\n?$/, "\n");
 }
 
-function readOfficialConfigText() {
-  ensureDir(OFFICIAL_HOME);
-  if (!fs.existsSync(OFFICIAL_CONFIG_PATH)) {
+function readConfigText(configPath) {
+  ensureDir(path.dirname(configPath));
+  if (!fs.existsSync(configPath)) {
     return "";
   }
-  return fs.readFileSync(OFFICIAL_CONFIG_PATH, "utf8");
+  return fs.readFileSync(configPath, "utf8");
+}
+
+function readOfficialConfigText() {
+  return readConfigText(OFFICIAL_CONFIG_PATH);
+}
+
+function readOfficialCliConfigText() {
+  return readConfigText(OFFICIAL_CLI_CONFIG_PATH);
+}
+
+function readOfficialCliConfigSeedText() {
+  const existing = readOfficialCliConfigText();
+  if (existing.trim()) {
+    return existing;
+  }
+  if (pathExists(PLAIN_CODEX_BACKUP_CONFIG_PATH)) {
+    return readText(PLAIN_CODEX_BACKUP_CONFIG_PATH);
+  }
+  if (pathExists(OFFICIAL_CONFIG_PATH) && getPlainCodexMode() === PLAIN_CODEX_MODE_OFFICIAL) {
+    return readOfficialConfigText();
+  }
+  return "";
 }
 
 function getCurrentWorkspaceRestriction(text) {
@@ -1037,27 +1572,50 @@ function getCurrentWorkspaceRestriction(text) {
   return match ? match[1] : null;
 }
 
-function applyManagedConfig(workspaceId) {
-  ensureDir(OFFICIAL_HOME);
-  backupFileIfExists(OFFICIAL_CONFIG_PATH, "config.toml.bak");
+function applyManagedConfigToHome(configPath, workspaceId) {
+  ensureDir(path.dirname(configPath));
+  backupFileIfExists(configPath, path.basename(configPath) + ".bak");
 
   const text = writeManagedTopLevelTomlKeys(
-    readOfficialConfigText(),
+    readConfigText(configPath),
     {
       ...MANAGED_CONFIG_KEYS,
       forced_chatgpt_workspace_id: JSON.stringify(workspaceId),
     },
   );
-  writeText(OFFICIAL_CONFIG_PATH, text);
+  writeText(configPath, text);
+}
+
+function removeManagedWorkspaceRestrictionFromHome(configPath) {
+  ensureDir(path.dirname(configPath));
+  const updated = writeManagedTopLevelTomlKeys(readConfigText(configPath), MANAGED_CONFIG_KEYS);
+  writeText(configPath, updated);
+}
+
+function applyManagedConfig(workspaceId) {
+  applyManagedConfigToHome(OFFICIAL_CONFIG_PATH, workspaceId);
+}
+
+function applyManagedConfigToOfficialCliHome(workspaceId) {
+  ensureOfficialCliHomeLayout();
+  ensureDir(path.dirname(OFFICIAL_CLI_CONFIG_PATH));
+  backupFileIfExists(OFFICIAL_CLI_CONFIG_PATH, path.basename(OFFICIAL_CLI_CONFIG_PATH) + ".bak");
+  const text = writeManagedTopLevelTomlKeys(readOfficialCliConfigSeedText(), {
+    ...MANAGED_CONFIG_KEYS,
+    forced_chatgpt_workspace_id: JSON.stringify(workspaceId),
+  });
+  writeText(OFFICIAL_CLI_CONFIG_PATH, text);
 }
 
 function removeManagedWorkspaceRestriction() {
-  ensureDir(OFFICIAL_HOME);
-  const updated = writeManagedTopLevelTomlKeys(
-    readOfficialConfigText(),
-    MANAGED_CONFIG_KEYS,
-  );
-  writeText(OFFICIAL_CONFIG_PATH, updated);
+  removeManagedWorkspaceRestrictionFromHome(OFFICIAL_CONFIG_PATH);
+}
+
+function removeManagedWorkspaceRestrictionFromOfficialCliHome() {
+  ensureOfficialCliHomeLayout();
+  ensureDir(path.dirname(OFFICIAL_CLI_CONFIG_PATH));
+  const updated = writeManagedTopLevelTomlKeys(readOfficialCliConfigSeedText(), MANAGED_CONFIG_KEYS);
+  writeText(OFFICIAL_CLI_CONFIG_PATH, updated);
 }
 
 function detectRunningCodexProcesses() {
@@ -1120,24 +1678,47 @@ function saveOfficialApiKeyProfileAuth(profileId, authData) {
   writeJson(officialApiKeyProfileAuthPath(profileId), authData);
 }
 
-function copySavedAuthToOfficial(accountId) {
-  const source = savedAuthPath(accountId);
-  if (!fs.existsSync(source)) {
-    throw new Error(`Saved auth is missing for account ${accountId}`);
+function copyFileBackedAuthToPath(sourcePath, destinationPath, missingMessage) {
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(missingMessage);
   }
-  ensureDir(OFFICIAL_HOME);
-  backupFileIfExists(OFFICIAL_AUTH_PATH, "auth.json.bak");
-  fs.copyFileSync(source, OFFICIAL_AUTH_PATH);
+  ensureDir(path.dirname(destinationPath));
+  backupFileIfExists(destinationPath, path.basename(destinationPath) + ".bak");
+  fs.copyFileSync(sourcePath, destinationPath);
+}
+
+function copySavedAuthToOfficial(accountId) {
+  copyFileBackedAuthToPath(
+    savedAuthPath(accountId),
+    OFFICIAL_AUTH_PATH,
+    `Saved auth is missing for account ${accountId}`,
+  );
+}
+
+function copySavedAuthToOfficialCliHome(accountId) {
+  ensureOfficialCliHomeLayout();
+  copyFileBackedAuthToPath(
+    savedAuthPath(accountId),
+    OFFICIAL_CLI_AUTH_PATH,
+    `Saved auth is missing for account ${accountId}`,
+  );
 }
 
 function copyOfficialApiKeyProfileToOfficial(profileId) {
-  const source = officialApiKeyProfileAuthPath(profileId);
-  if (!fs.existsSync(source)) {
-    throw new Error(`Official API key auth is missing for profile ${profileId}`);
-  }
-  ensureDir(OFFICIAL_HOME);
-  backupFileIfExists(OFFICIAL_AUTH_PATH, "auth.json.bak");
-  fs.copyFileSync(source, OFFICIAL_AUTH_PATH);
+  copyFileBackedAuthToPath(
+    officialApiKeyProfileAuthPath(profileId),
+    OFFICIAL_AUTH_PATH,
+    `Official API key auth is missing for profile ${profileId}`,
+  );
+}
+
+function copyOfficialApiKeyProfileToOfficialCliHome(profileId) {
+  ensureOfficialCliHomeLayout();
+  copyFileBackedAuthToPath(
+    officialApiKeyProfileAuthPath(profileId),
+    OFFICIAL_CLI_AUTH_PATH,
+    `Official API key auth is missing for profile ${profileId}`,
+  );
 }
 
 function deleteOfficialAuthIfPresent() {
@@ -1147,13 +1728,44 @@ function deleteOfficialAuthIfPresent() {
   }
 }
 
+function applyOfficialProfileRefToDesktopHome(state, profileRef) {
+  if (profileRef.kind === PROFILE_KIND_CHATGPT) {
+    const tuple = requireTuple(state, profileRef.id);
+    copySavedAuthToOfficial(getTupleAuthStorageKey(tuple));
+    applyManagedConfig(getTupleLoginWorkspaceId(tuple));
+    return;
+  }
+
+  if (profileRef.kind === PROFILE_KIND_OFFICIAL_API_KEY) {
+    const profile = requireOfficialApiKeyProfile(state, profileRef.id);
+    copyOfficialApiKeyProfileToOfficial(profile.profile_id);
+    removeManagedWorkspaceRestriction();
+    return;
+  }
+
+  throw new Error(`Unknown official profile kind: ${profileRef.kind}`);
+}
+
 async function activateTuple(state, tupleId, { silent = false, skipProcessCheck = false } = {}) {
   const tuple = requireTuple(state, tupleId);
   if (!skipProcessCheck) {
     assertNoRunningCodexProcesses();
   }
-  copySavedAuthToOfficial(getTupleAuthStorageKey(tuple));
-  applyManagedConfig(getTupleLoginWorkspaceId(tuple));
+  copySavedAuthToOfficialCliHome(getTupleAuthStorageKey(tuple));
+  applyManagedConfigToOfficialCliHome(getTupleLoginWorkspaceId(tuple));
+  if (getPlainCodexMode() === PLAIN_CODEX_MODE_OFFICIAL) {
+    applyOfficialProfileRefToDesktopHome(state, {
+      kind: PROFILE_KIND_CHATGPT,
+      id: tupleId,
+    });
+  }
+  try {
+    syncManagedThreadMetadata({ scope: "recent" });
+  } catch (error) {
+    if (!silent) {
+      console.warn(`Warning: failed to sync recent shared threads: ${error.message}`);
+    }
+  }
   tuple.last_used_at = isoNow();
   state.active_tuple_id = tupleId;
   state.active_official_profile = {
@@ -1188,8 +1800,21 @@ async function activateOfficialApiKeyProfile(
   if (!skipProcessCheck) {
     assertNoRunningCodexProcesses();
   }
-  copyOfficialApiKeyProfileToOfficial(profile.profile_id);
-  removeManagedWorkspaceRestriction();
+  copyOfficialApiKeyProfileToOfficialCliHome(profile.profile_id);
+  removeManagedWorkspaceRestrictionFromOfficialCliHome();
+  if (getPlainCodexMode() === PLAIN_CODEX_MODE_OFFICIAL) {
+    applyOfficialProfileRefToDesktopHome(state, {
+      kind: PROFILE_KIND_OFFICIAL_API_KEY,
+      id: profile.profile_id,
+    });
+  }
+  try {
+    syncManagedThreadMetadata({ scope: "recent" });
+  } catch (error) {
+    if (!silent) {
+      console.warn(`Warning: failed to sync recent shared threads: ${error.message}`);
+    }
+  }
   profile.last_used_at = isoNow();
   state.official_api_key_profiles[profile.profile_id] = profile;
   state.active_tuple_id = null;
@@ -1234,18 +1859,32 @@ async function setPlainCodexOfficialMode(
 
   if (!activeProfile && !hasBackupConfig && !hasBackupAuth) {
     throw new Error(
-      "No active official profile or plain-codex backup is available. Activate an official profile in codex_m first.",
+      "No active official profile or codex.exe backup is available. Activate an official profile in codex_m first.",
     );
   }
 
   restorePlainCodexBridgeBackups();
 
   if (activeProfile) {
-    await activateOfficialProfileRef(
-      state,
-      { kind: activeProfile.kind, id: activeProfile.id },
-      { silent: true, skipProcessCheck: true },
-    );
+    applyOfficialProfileRefToDesktopHome(state, {
+      kind: activeProfile.kind,
+      id: activeProfile.id,
+    });
+    try {
+      syncManagedThreadMetadata({ scope: "recent" });
+    } catch (error) {
+      if (!silent) {
+        console.warn(`Warning: failed to sync recent shared threads: ${error.message}`);
+      }
+    }
+  } else {
+    try {
+      syncManagedThreadMetadata({ scope: "recent" });
+    } catch (error) {
+      if (!silent) {
+        console.warn(`Warning: failed to sync recent shared threads: ${error.message}`);
+      }
+    }
   }
 
   setPlainCodexModeState(PLAIN_CODEX_MODE_OFFICIAL, {
@@ -1255,11 +1894,11 @@ async function setPlainCodexOfficialMode(
   });
 
   if (!silent) {
-    console.log("Plain codex now points back to the official codex_m-managed state.");
+    console.log("codex.exe now makes Desktop follow the official lane managed by codex_m.");
     if (activeProfile) {
       console.log(`Restored official profile: ${getActiveOfficialProfileLabel(state)}`);
     } else {
-      console.log("Restored the last plain-codex official backup.");
+      console.log("Restored the last codex.exe official backup.");
     }
     if (skipProcessCheck) {
       console.log(
@@ -1403,11 +2042,11 @@ async function deleteOfficialApiKeyProfile(
 }
 
 function getOfficialAuthAccountId() {
-  if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
+  if (!fs.existsSync(OFFICIAL_CLI_AUTH_PATH)) {
     return null;
   }
   try {
-    const authData = readJson(OFFICIAL_AUTH_PATH);
+    const authData = readJson(OFFICIAL_CLI_AUTH_PATH);
     if (detectAuthKind(authData) !== PROFILE_KIND_CHATGPT) {
       return null;
     }
@@ -1418,6 +2057,17 @@ function getOfficialAuthAccountId() {
 }
 
 function getOfficialAuthKind() {
+  if (!fs.existsSync(OFFICIAL_CLI_AUTH_PATH)) {
+    return null;
+  }
+  try {
+    return detectAuthKind(readJson(OFFICIAL_CLI_AUTH_PATH));
+  } catch {
+    return null;
+  }
+}
+
+function getDesktopAuthKind() {
   if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
     return null;
   }
@@ -1500,7 +2150,7 @@ function doctorReport(state) {
     }
   }
 
-  const configText = readOfficialConfigText();
+  const configText = readOfficialCliConfigText();
   try {
     const forcedWorkspaceKeys = parseTomlTopLevelKeys(
       configText,
@@ -1538,7 +2188,7 @@ function doctorReport(state) {
 
   if (plainCodexMode === PLAIN_CODEX_MODE_THIRD_PARTY) {
     warnings.push(
-      "Plain codex is intentionally bridged to the third-party provider right now, so official auth/config drift checks are relaxed until you run 'codex_m use-codex'.",
+      "Desktop is intentionally following the third-party lane right now, so official Desktop auth/config drift checks are relaxed until you run 'codex_m use-codex'.",
     );
   } else if (activeProfile?.kind === PROFILE_KIND_CHATGPT) {
     const activeTuple = activeProfile.record;
@@ -1701,7 +2351,7 @@ function printTupleSummary(state) {
   const tuples = getAllTuples(state);
   const apiKeyProfiles = getOfficialApiKeyProfiles(state);
   const activeId = state.active_tuple_id;
-  const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialConfigText());
+  const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialCliConfigText());
   const officialAccountId = getOfficialAuthAccountId();
   const officialAuthKind = getOfficialAuthKind();
 
@@ -1751,9 +2401,10 @@ function printTupleSummary(state) {
 
 function printOverview(state) {
   const tuples = getAllTuples(state);
-  const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialConfigText());
+  const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialCliConfigText());
   const processes = detectRunningCodexProcesses();
   const officialAuthKind = getOfficialAuthKind();
+  const desktopAuthKind = getDesktopAuthKind();
   const plainCodexMode = getPlainCodexMode();
 
   console.log("codex_m");
@@ -1761,8 +2412,9 @@ function printOverview(state) {
   console.log(`Saved ChatGPT snapshots: ${tuples.length}`);
   console.log(`Saved official API keys: ${getOfficialApiKeyProfiles(state).length}`);
   console.log(`Active official profile: ${getActiveOfficialProfileLabel(state)}`);
-  console.log(`Plain codex mode: ${plainCodexMode}`);
-  console.log(`Official auth kind: ${formatProfileKindLabel(officialAuthKind || "(none)")}`);
+  console.log(`Desktop follow mode: ${plainCodexMode}`);
+  console.log(`codex CLI auth kind: ${formatProfileKindLabel(officialAuthKind || "(none)")}`);
+  console.log(`Desktop auth kind: ${formatProfileKindLabel(desktopAuthKind || "(none)")}`);
   console.log(`Forced login workspace: ${currentWorkspace || "(not set)"}`);
   console.log(
     `Running Codex CLI processes: ${processes.length ? formatProcessSummary(processes) : "none"}`,
@@ -1843,7 +2495,7 @@ class ManageSelectPrompt extends Select {
 }
 
 function getWizardSummaryLines(state) {
-  const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialConfigText());
+  const currentWorkspace = getCurrentWorkspaceRestriction(readOfficialCliConfigText());
   const processes = detectRunningCodexProcesses();
   return [
     "codex_m",
@@ -2734,11 +3386,11 @@ async function handleImportCurrent(args) {
     }
   }
 
-  if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
-    throw new Error(`Official auth.json is missing at ${OFFICIAL_AUTH_PATH}`);
+  if (!fs.existsSync(OFFICIAL_CLI_AUTH_PATH)) {
+    throw new Error(`Official CLI auth.json is missing at ${OFFICIAL_CLI_AUTH_PATH}`);
   }
 
-  const authData = readJson(OFFICIAL_AUTH_PATH);
+  const authData = readJson(OFFICIAL_CLI_AUTH_PATH);
   const detectedKind = detectAuthKind(authData);
   const effectiveKind = kind || detectedKind;
   if (kind && kind !== detectedKind) {
@@ -2852,9 +3504,9 @@ async function handleUseCodex(state, args) {
   }
 
   if (!force && process.stdin.isTTY) {
-    const decision = await interactiveResolveForce("plain-codex restore");
+    const decision = await interactiveResolveForce("codex.exe restore");
     if (!decision.proceed) {
-      console.log("Plain codex restore canceled.");
+      console.log("codex.exe restore canceled.");
       return;
     }
     force = decision.force;
@@ -2959,7 +3611,7 @@ async function handleDelete(state, args) {
 async function handleDoctor(state) {
   const { issues, warnings } = doctorReport(state);
   if (!issues.length) {
-    console.log("No obvious issues found.");
+    console.log("No blocking issues found for the official lane.");
     warnings.forEach((warning, index) => {
       console.log(`Warning ${index + 1}. ${warning}`);
     });
@@ -2972,6 +3624,40 @@ async function handleDoctor(state) {
     console.log(`Warning ${index + 1}. ${warning}`);
   });
   process.exitCode = 1;
+}
+
+async function handleSyncThreads(state, args) {
+  let force = false;
+  let scope = "recent";
+
+  for (const arg of args) {
+    if (arg === "--force") {
+      force = true;
+    } else if (arg === "--all") {
+      scope = "all";
+    } else if (arg === "--recent") {
+      scope = "recent";
+    } else {
+      throw new Error(`Unknown sync-threads option: ${arg}`);
+    }
+  }
+
+  if (!force) {
+    assertNoRunningCodexProcesses();
+  }
+
+  const results = syncManagedThreadMetadata({ scope });
+  results.forEach((result) => {
+    if (result.error) {
+      console.log(`Failed to sync shared thread metadata into ${result.targetHome}: ${result.error}`);
+      return;
+    }
+    if (result.mirrored_from) {
+      console.log(`Mirrored thread metadata into ${result.targetHome} from ${result.mirrored_from} after a direct sync failure.`);
+      return;
+    }
+    console.log(`Synced ${result.upserted} shared thread metadata row(s) into ${result.targetHome} using scope=${scope}.`);
+  });
 }
 
 async function handleLogin(args) {
@@ -3470,7 +4156,7 @@ async function runOverviewPage() {
     const state = loadState();
     const choice = await selectChoice({
       title: "Home",
-      description: "Choose the official identity flow you want most often.",
+      description: "Manage official ChatGPT snapshots and official API key profiles. codex.exe only changes which official lane Desktop follows.",
       state,
       choices: [
         {
@@ -3490,8 +4176,8 @@ async function runOverviewPage() {
         },
         {
           name: "use_codex",
-          message: "Plain codex -> codex",
-          hint: "restore ~/.codex to the official codex_m-managed state",
+          message: "codex.exe",
+          hint: "make Desktop follow the official identity currently managed by codex_m",
         },
         {
           name: "quit",
@@ -3520,9 +4206,9 @@ async function runOverviewPage() {
       continue;
     }
 
-    const decision = await interactiveResolveForce("plain-codex restore");
+    const decision = await interactiveResolveForce("codex.exe restore");
     if (!decision.proceed) {
-      console.log("Plain codex restore canceled.");
+      console.log("codex.exe restore canceled.");
       continue;
     }
     await setPlainCodexOfficialMode(loadState(), { skipProcessCheck: decision.force });
@@ -3560,7 +4246,7 @@ async function runLoginPage() {
         {
           name: "import_current_chatgpt",
           message: "Use current signed-in Codex",
-          hint: "if ~/.codex is already logged in, save that login and ask for the workspace name",
+          hint: "if the official codex CLI is already logged in, save that login and ask for the workspace name",
         },
         {
           name: "add_api_key",
@@ -3572,8 +4258,8 @@ async function runLoginPage() {
           message: "Import current official API key",
           hint:
             officialAuthKind === PROFILE_KIND_OFFICIAL_API_KEY
-              ? "current ~/.codex/auth.json is already in API key mode"
-              : "requires ~/.codex/auth.json to already be in API key mode",
+                  ? "current official codex CLI auth is already in API key mode"
+                  : "requires the official codex CLI auth to already be in API key mode",
         },
         {
           name: "back",
@@ -3618,15 +4304,15 @@ async function runLoginPage() {
     }
 
     if (choice === "import_current_chatgpt") {
-      if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
-        throw new Error(`Official auth.json is missing at ${OFFICIAL_AUTH_PATH}`);
+      if (!fs.existsSync(OFFICIAL_CLI_AUTH_PATH)) {
+        throw new Error(`Official CLI auth.json is missing at ${OFFICIAL_CLI_AUTH_PATH}`);
       }
-      if (detectAuthKind(readJson(OFFICIAL_AUTH_PATH)) !== PROFILE_KIND_CHATGPT) {
+      if (detectAuthKind(readJson(OFFICIAL_CLI_AUTH_PATH)) !== PROFILE_KIND_CHATGPT) {
         throw new Error(
           "Current official auth is not a ChatGPT login snapshot. Choose 'Import current official API key' instead.",
         );
       }
-      await interactiveRegisterTupleFromAuthData(readJson(OFFICIAL_AUTH_PATH));
+      await interactiveRegisterTupleFromAuthData(readJson(OFFICIAL_CLI_AUTH_PATH));
       continue;
     }
 
@@ -3639,10 +4325,10 @@ async function runLoginPage() {
     }
 
     if (choice === "import_current_api_key") {
-      if (!fs.existsSync(OFFICIAL_AUTH_PATH)) {
-        throw new Error(`Official auth.json is missing at ${OFFICIAL_AUTH_PATH}`);
+      if (!fs.existsSync(OFFICIAL_CLI_AUTH_PATH)) {
+        throw new Error(`Official CLI auth.json is missing at ${OFFICIAL_CLI_AUTH_PATH}`);
       }
-      const authData = readJson(OFFICIAL_AUTH_PATH);
+      const authData = readJson(OFFICIAL_CLI_AUTH_PATH);
       if (detectAuthKind(authData) !== PROFILE_KIND_OFFICIAL_API_KEY) {
         throw new Error(
           "Current official auth is not in API key mode. Choose 'Use current signed-in Codex' for ChatGPT logins instead.",
@@ -3675,7 +4361,7 @@ async function runDoctorPage() {
         ? `Found ${issues.length} issue(s) and ${warnings.length} warning(s). Enter to rerun or Esc to go back.`
         : warnings.length
           ? `No blocking issues. Found ${warnings.length} warning(s). Enter to rerun or Esc to go back.`
-          : "No obvious issues found. Enter to rerun or Esc to go back.",
+          : "No blocking issues found for the official lane. Enter to rerun or Esc to go back.",
       state,
       choices: [
         ...(lines.length
@@ -3683,7 +4369,7 @@ async function runDoctorPage() {
           : [
               {
                 name: "healthy",
-                message: "No obvious issues found",
+                message: "No blocking issues found for the official lane",
                 hint: "healthy",
               },
             ]),
@@ -3712,12 +4398,12 @@ async function runHelpPage() {
   const state = loadState();
   await selectChoice({
     title: "Help",
-    description: "Use Home first for the common flow: login, account manage, API key manage, and logout. Esc returns.",
+    description: "Use Home for the common official-lane flow: login, account manage, API key manage, and Desktop follow-mode restore. Esc returns.",
     state,
     choices: [
       {
         name: "home",
-        message: "Home page gives direct Account Manage and API Key Manage entry points",
+        message: "Home page gives direct official ChatGPT and official API key entry points",
         hint: "recommended starting point",
       },
       {
@@ -3766,12 +4452,16 @@ Usage:
   codex_m add-workspace
   codex_m activate [--kind chatgpt|official-api-key] <id> [--force]
   codex_m use-codex [--force]
+  codex_m sync-threads [--all] [--force]
   codex_m rename [--kind chatgpt|official-api-key] <id> --alias <manual-name>
   codex_m delete [--kind chatgpt|official-api-key] <id> [--force]
   codex_m doctor
 
 Notes:
-  - Running plain 'codex_m' opens a simple Home page with Login, Account Manage, API Key Manage, Plain codex -> codex, and Quit.
+  - Running plain 'codex_m' opens a simple Home page with Login, Account Manage, API Key Manage, codex.exe, and Quit.
+  - codex_m manages both official ChatGPT snapshots and official API key profiles.
+  - The codex CLI command always stays on the official lane managed by codex_m.
+  - The codex.exe action makes Desktop follow the official lane; it does not replace the launcher or swap the whole home.
   - Account Manage applies saved official ChatGPT snapshots; API Key Manage applies saved official API key profiles.
   - In Account Manage or API Key Manage, Enter applies the selected saved profile and Tab opens Rename/Delete or Logout actions for that section.
   - ChatGPT workspace display names and official API key profile names are always manual.
@@ -3860,6 +4550,11 @@ async function handleCommand(args) {
 
   if (command === "use-codex") {
     await handleUseCodex(state, rest);
+    return;
+  }
+
+  if (command === "sync-threads") {
+    await handleSyncThreads(state, rest);
     return;
   }
 

@@ -1,40 +1,35 @@
 # Common Contract
 
-`codex_m` is a machine-local manager for real Codex login snapshots.
+`codex_m` is the machine-local manager for the official Codex lane.
 
-## User-Facing UX
+## User-Facing Behavior
 
-- Home must stay minimal: `Login`, `Account Manage`, `API Key Manage`, `Plain codex -> codex`, `Quit`.
-- `Login now` is the default user path.
-- `Use current signed-in Codex` is advanced and recovery-oriented.
-- A successful login or import must ask for a manual workspace name.
-- `Manage` must be keyboard-first.
-- `Enter` switches.
-- `Tab` opens more actions.
-- More actions must include `Rename` and `Logout`.
-- `Plain codex -> codex` is a quick recovery action that restores plain `codex` to the official `~/.codex` state.
+- Home is intentionally small: `Login`, `Account Manage`, `API Key Manage`, `codex.exe`, `Quit`.
+- `Login` is the entry point for saving official identities.
+- `Account Manage` is only for official ChatGPT snapshots.
+- `API Key Manage` is only for official API key profiles.
+- `codex.exe` means "make the Desktop lane follow the official identity currently managed by `codex_m`".
+- `Enter` applies the selected identity in the current section.
+- `Tab` opens section-specific actions such as `Rename`, `Logout`, or `Delete`.
 
-## Real Snapshot Model
+## Identity Model
 
-- A saved item represents one real login snapshot.
-- The real identity is the login token's `chatgpt_account_id`.
-- Saved snapshot storage must preserve distinct `(account_email, chatgpt_account_id)` pairs when the email differs.
-- Visible organizations in the token are hints only.
-- Do not create multiple saved switch targets from a single token just because multiple visible orgs exist.
+- One saved ChatGPT item represents one real official login snapshot.
+- The real identity key is `chatgpt_account_id`.
+- Preserve distinct `(account_email, chatgpt_account_id)` pairs when the email differs.
+- Treat visible organizations as hints only.
+- Official API key profiles are separate saved identities from ChatGPT snapshots.
 
-## Data Safety
+## Sharing Model
 
-- Shared Codex data should survive normal switch/logout flows.
-- Login-specific data may change:
-  - saved `codex_m` state
-  - saved auth snapshots
-  - official `~/.codex/auth.json`
-  - managed auth/config restriction keys
-- Switching the login used by normal `codex.exe` should be modeled as changing those auth carriers only, while shared `~/.codex` sessions, history, trust, and skills stay put.
-- Do not wipe unrelated project trust, model settings, history, sessions, or skills.
+- Share safe session/history/thread metadata as much as practical.
+- Keep auth carriers and managed config keys distinct from shared session/history state.
+- Do not model switching as whole-home replacement.
+- Do not live-share SQLite sidebar/thread databases between homes.
+- If thread/sidebar views need alignment, use synchronization or backfill instead of direct SQLite sharing.
 
 ## Upgrade Invariants
 
-- Prefer repair or migration over destructive reinstall.
-- Compact only exact duplicate saved snapshots for the same `(account_email, chatgpt_account_id)` pair.
-- Keep the main UX stable even if a platform-specific runtime is replaced.
+- Prefer migration or repair over destructive reinstall.
+- Keep the official/third-party boundary understandable.
+- Keep the public contract stable even when platform adapters change.

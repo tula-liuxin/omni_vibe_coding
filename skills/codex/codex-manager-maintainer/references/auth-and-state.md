@@ -1,55 +1,43 @@
 # Auth And State
 
-## Real Identity Rules
+## Official Identity Rules
 
-- Treat `chatgpt_account_id` as the real login workspace/account identity.
-- Save login snapshots by `(account_email, chatgpt_account_id)` when email is available, so different emails on the same real workspace stay separate.
-- Treat `organizations[].id` as informational only.
-- Validate switching behavior against the real login identity, not against display names or visible org ids.
+- Official ChatGPT snapshots are keyed by `chatgpt_account_id`.
+- Save ChatGPT snapshots by `(account_email, chatgpt_account_id)` when email is available.
+- Official API key profiles are separate file-backed identities.
+- Validate switching behavior against the real login identity, not display names or visible organization ids.
 
-## `auth.json`
+## Auth Carriers
 
-- `~/.codex/auth.json` is the main local carrier of the active official login snapshot.
-- `codex_m` may also store per-snapshot auth copies in its own machine-local home.
-- Copying a saved official profile into official `auth.json` is part of switching.
-- Switching the login that plain `codex.exe` uses should happen by replacing this file-backed carrier, not by relocating the whole `CODEX_HOME`.
-- ChatGPT snapshots and official API key profiles are both file-backed.
-- Official API key profile copies live under `~/.codex-manager/official-api-keys/<profile-id>/auth.json`.
+- The active official identity is applied by updating the official auth carrier and managed config keys.
+- Switching the official identity must not require relocating the entire Codex home.
+- ChatGPT snapshots and official API key profiles are both file-backed saved identities.
+- Desktop follow-mode and CLI follow-mode may use different current homes on some platforms; that is an adapter detail, not the public contract.
 
-## `config.toml`
+## Managed Config
 
-- `forced_chatgpt_workspace_id` must be written at the TOML top level.
-- Writing that key under a nested table makes Codex ignore it.
+- Managed keys must stay at the TOML top level.
 - Preserve unrelated config content.
-- When switching the login used by normal `codex.exe`, patch only the managed top-level keys and leave session/history/trust settings alone.
-- When an official API key profile is active, `forced_chatgpt_workspace_id` must be removed.
-- If plain `codex` is temporarily bridged to the third-party provider, record that mode separately so official doctor/validation can distinguish intentional drift from breakage.
+- When a ChatGPT snapshot is active, the managed workspace restriction must match that login identity.
+- When an official API key profile is active, the managed workspace restriction must be removed.
+- If Desktop is intentionally following the third-party lane, validators may relax official Desktop drift checks until `codex_m` restores the official follow-mode.
 
-## Import Current
+## Logout And Deletion
 
-- `Use current signed-in Codex` means "capture the login already present in official `~/.codex/auth.json`".
-- It does not create a new backend workspace by itself.
-- It is useful for migration, repair, recovery, and syncing a login the user already completed outside `codex_m`.
-- `Import current official API key` means "capture the file-backed official API key already present in official `~/.codex/auth.json`".
+- Logout removes the selected saved ChatGPT snapshot only.
+- Deleting an official API key profile removes only that saved API key profile.
+- Shared sessions/history/config should remain intact.
 
-## Logout
+## Duplicate Handling
 
-- Logout removes the saved snapshot entry.
-- If it was the last saved snapshot for that saved `(account_email, chatgpt_account_id)` pair, remove the saved auth copy for that pair.
-- If it was the active and only remaining snapshot, official `auth.json` may be cleared and the managed workspace restriction removed.
-- Shared Codex sessions/history/config should remain.
-- Deleting an official API key profile removes only that saved API key profile and may fall back to another saved official profile if one exists.
+- Compact only exact duplicate saved snapshot identities.
+- Different emails on the same real login workspace remain separate saved snapshots.
+- Preserve the active or most recent entry when compacting.
 
-## Duplicate Compaction
+## State Model
 
-- If multiple saved entries share one saved `(account_email, chatgpt_account_id)` identity, compact them into one saved snapshot.
-- Different emails on the same real login workspace must remain as separate saved snapshots.
-- Keep the most recent or active item as the canonical entry.
-- Preserve the manual display name when possible.
-
-## State Shape
-
-- `schema_version = 3` adds `official_api_key_profiles` and `active_official_profile`.
-- `active_official_profile` is the source of truth for the currently applied official identity and may be:
-  - `{ kind = "chatgpt", id = <tuple-id> }`
-  - `{ kind = "official_api_key", id = <profile-id> }`
+- `active_official_profile` is the source of truth for the applied official identity.
+- `active_official_profile` may point to:
+  - a ChatGPT snapshot
+  - an official API key profile
+- Any legacy fields should be interpreted in a way that preserves the current official identity without changing the public contract.

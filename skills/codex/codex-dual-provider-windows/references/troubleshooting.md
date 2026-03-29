@@ -21,8 +21,8 @@ Expected:
 - `codex3_m` reports no obvious issues, or only warnings you understand.
 - The mirrored third-party `config.toml` under `%userprofile%\\.codex-apikey` contains the tutorial-required provider block.
 - `codex3` keeps third-party auth/config under `%userprofile%\\.codex-apikey`.
-- `codex3` shares `sessions/` and `archived_sessions/` from the shared Codex home under `%userprofile%\\.codex`.
-- `codex3_m use-codex3 --force` is the thing that temporarily bridges plain `codex` into the third-party lane.
+- `codex3` shares `sessions/`, `archived_sessions/`, and `session_index.jsonl` with the shared Codex home under `%userprofile%\\.codex`.
+- `codex3_m use-codex3 --force` is the thing that makes the Desktop lane follow the active third-party profile.
 
 ## Symptom: `codex3` is slow or keeps showing `Reconnecting...`
 
@@ -63,7 +63,7 @@ If the provider tutorial shows examples under `%userprofile%\\.codex\\config.tom
 - keep third-party auth under `%userprofile%\\.codex-apikey\\auth.json`,
 - mirror the provider block under `%userprofile%\\.codex-apikey\\config.toml`,
 - run `codex3` with that third-party auth/config while sharing session directories from `%userprofile%\\.codex`,
-- use the manager quick action only when you want plain `codex` to follow the third-party lane,
+- use the manager quick action only when you want Desktop `codex.exe` to follow the third-party lane,
 - and leave official `~\\.codex\\auth.json` untouched.
 
 ## Symptom: `codex3` does not see sessions created by plain `codex`
@@ -90,6 +90,25 @@ Expected:
 
 - `%userprofile%\\.codex-apikey\\sessions` resolves to `%userprofile%\\.codex\\sessions`
 - `%userprofile%\\.codex-apikey\\archived_sessions` resolves to `%userprofile%\\.codex\\archived_sessions`
+
+## Symptom: `codex3` shares session files but the desktop/sidebar thread list still looks different
+
+Likely cause:
+
+- Recent Codex builds keep thread/sidebar metadata in a local SQLite index such as `%userprofile%\\.codex\\state_5.sqlite` and `%userprofile%\\.codex-apikey\\state_5.sqlite`.
+- The split-home design intentionally shares `sessions/`, `archived_sessions/`, and `session_index.jsonl`, but it does not share `state_5.sqlite`, `state_5.sqlite-wal`, or `state_5.sqlite-shm`.
+- Sidebar views are also workspace-filtered by `cwd`, so threads created from `C:\\Users\\23677` or `C:\\Users\\23677\\OneDrive\\Desktop` will not appear while the active workspace is `C:\\Users\\23677\\OneDrive\\Documents\\Playground`.
+
+Fix:
+
+1. Use plain `codex` after `codex3_m use-codex3 --force` when you want Desktop to follow the third-party lane while keeping the official home as the current sidebar/thread index.
+2. Start `codex3` from the same workspace path you expect to appear in the sidebar.
+3. Do not hard-link or junction `state_5.sqlite*` between homes. SQLite WAL/SHM files make that unsafe.
+
+Notes:
+
+- This symptom does not mean session sharing is broken.
+- If you need stronger sidebar alignment later, add a deliberate sync/backfill mechanism instead of sharing the live SQLite files.
 
 ## Symptom: `expected value at line 1 column 1`
 

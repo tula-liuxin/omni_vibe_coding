@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { DatabaseSync } from "node:sqlite";
 import enquirer from "enquirer";
 
 const { Select, Input, Confirm, Password } = enquirer;
@@ -61,10 +62,12 @@ const LAUNCHER_DIR =
 const DEFAULT_THIRD_PARTY_HOME = path.join(os.homedir(), ".codex-apikey");
 const DEFAULT_SHARED_CODEX_HOME = path.join(os.homedir(), ".codex");
 const SHARED_SESSION_RELATIVE_PATHS = ["sessions", "archived_sessions"];
+const SHARED_SESSION_INDEX_FILE = "session_index.jsonl";
 const PROVIDER_MODE_COMPAT = "compat";
 const PROVIDER_MODE_STABLE_HTTP = "stable_http";
 const DEFAULT_STABLE_HTTP_PROVIDER_ID = "sub2api";
 const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
+const OFFICIAL_CLI_HOME = path.join(os.homedir(), ".codex-official");
 const OFFICIAL_AUTH_PATH = path.join(OFFICIAL_HOME, "auth.json");
 const OFFICIAL_CONFIG_PATH = path.join(OFFICIAL_HOME, "config.toml");
 const DEFAULT_PROVIDER = {
@@ -134,6 +137,376 @@ function pathExists(filePath) {
   } catch {
     return false;
   }
+}
+
+function readRecentSessionIndexEntries(homePath) {
+  const entries = [];
+  const filePath = path.join(homePath, "session_index.jsonl");
+  if (!pathExists(filePath)) {
+    return entries;
+  }
+
+  const text = readText(filePath);
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed?.id) {
+        entries.push(parsed);
+      }
+    } catch {
+      // ignore malformed recent-session index lines
+    }
+  }
+  return entries;
+}
+
+function findRecentRolloutsById(sharedHome, wantedIds) {
+  const found = new Map();
+  const wanted = new Set(wantedIds.filter(Boolean));
+  if (!wanted.size) {
+    return found;
+  }
+
+  for (const bucketName of ["sessions", "archived_sessions"]) {
+    const root = path.join(sharedHome, bucketName);
+    if (!pathExists(root)) {
+      continue;
+    }
+
+    const stack = [root];
+    while (stack.length && found.size < wanted.size) {
+      const current = stack.pop();
+      const entries = fs.readdirSync(current, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+        if (!entry.isFile() || !/^rollout-.*\.jsonl$/i.test(entry.name)) {
+          continue;
+        }
+
+        const match = entry.name.match(
+          /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+        );
+        const rolloutId = match?.[1];
+        if (!rolloutId || !wanted.has(rolloutId)) {
+          continue;
+        }
+
+        found.set(rolloutId, {
+          bucketName,
+          root,
+          fullPath,
+        });
+      }
+    }
+  }
+
+  return found;
+}
+
+function toUnixTimestampSeconds(value) {
+  const parsed = Date.parse(value || "");
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.floor(parsed / 1000);
+}
+
+function extractTextContent(content) {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .filter((item) => item?.type === "input_text" || item?.type === "output_text")
+    .map((item) => String(item.text || ""))
+    .join("\n")
+    .trim();
+}
+
+function readRolloutPreviewText(rolloutPath, maxBytes = 256 * 1024) {
+  const handle = fs.openSync(rolloutPath, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const bytesRead = fs.readSync(handle, buffer, 0, maxBytes, 0);
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function copyDatabaseWithSidecars(sourceDbPath, destDbPath) {
+  fs.copyFileSync(sourceDbPath, destDbPath);
+  for (const suffix of ["-wal", "-shm"]) {
+    const sourceSidecar = `${sourceDbPath}${suffix}`;
+    if (pathExists(sourceSidecar)) {
+      fs.copyFileSync(sourceSidecar, `${destDbPath}${suffix}`);
+    }
+  }
+}
+
+function removeDatabaseSidecars(dbPath) {
+  for (const suffix of ["-wal", "-shm"]) {
+    const sidecarPath = `${dbPath}${suffix}`;
+    if (pathExists(sidecarPath)) {
+      fs.rmSync(sidecarPath, { force: true });
+    }
+  }
+}
+
+function parseThreadRowFromRollout(rolloutPath, fallbackTitle) {
+  const text = readRolloutPreviewText(rolloutPath);
+  const lines = text.split(/\r?\n/);
+
+  let sessionMeta = null;
+  let turnContext = null;
+  let firstUserMessage = "";
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (!sessionMeta && parsed.type === "session_meta") {
+      sessionMeta = parsed.payload || null;
+      continue;
+    }
+
+    if (!turnContext && parsed.type === "turn_context") {
+      turnContext = parsed.payload || null;
+      continue;
+    }
+
+    if (!firstUserMessage && parsed.type === "response_item" && parsed.payload?.role === "user") {
+      firstUserMessage = extractTextContent(parsed.payload.content);
+    }
+
+    if (sessionMeta && turnContext && firstUserMessage) {
+      break;
+    }
+  }
+
+  const createdAtIso = sessionMeta?.timestamp || null;
+  return {
+    id: sessionMeta?.id || null,
+    created_at: toUnixTimestampSeconds(createdAtIso),
+    updated_at: toUnixTimestampSeconds(createdAtIso),
+    source: String(sessionMeta?.source || "cli"),
+    model_provider: String(sessionMeta?.model_provider || ""),
+    cwd: String(sessionMeta?.cwd || turnContext?.cwd || ""),
+    title: fallbackTitle || firstUserMessage || sessionMeta?.id || path.basename(rolloutPath),
+    sandbox_policy: JSON.stringify(turnContext?.sandbox_policy || { type: "workspace-write" }),
+    approval_mode: String(turnContext?.approval_policy || "on-request"),
+    tokens_used: 0,
+    has_user_event: firstUserMessage ? 1 : 0,
+    archived: 0,
+    archived_at: null,
+    git_sha: sessionMeta?.git?.sha || null,
+    git_branch: sessionMeta?.git?.branch || null,
+    git_origin_url: sessionMeta?.git?.origin_url || null,
+    cli_version: String(sessionMeta?.cli_version || ""),
+    first_user_message: firstUserMessage || "",
+    agent_nickname: null,
+    agent_role: null,
+    memory_mode: String(turnContext?.memory_mode || "enabled"),
+    model: turnContext?.model || null,
+    reasoning_effort: turnContext?.effort || null,
+  };
+}
+
+function buildRecentSharedThreadRows(sharedHome, targetHome) {
+  const indexEntries = readRecentSessionIndexEntries(sharedHome);
+  const found = findRecentRolloutsById(
+    sharedHome,
+    indexEntries.map((entry) => entry.id),
+  );
+  const rows = [];
+
+  for (const entry of indexEntries) {
+    const located = found.get(entry.id);
+    if (!located) {
+      continue;
+    }
+
+    const row = parseThreadRowFromRollout(located.fullPath, entry.thread_name || "");
+    if (!row.id) {
+      continue;
+    }
+
+    row.archived = located.bucketName === "archived_sessions" ? 1 : 0;
+    row.archived_at = row.archived ? row.updated_at : null;
+    row.updated_at = Math.max(row.updated_at, toUnixTimestampSeconds(entry.updated_at || ""));
+    row.title = entry.thread_name || row.title;
+    row.rollout_path = path.join(
+      targetHome,
+      located.bucketName,
+      path.relative(located.root, located.fullPath),
+    );
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function buildAllSharedThreadRows(sharedHome, targetHome) {
+  const indexEntries = readRecentSessionIndexEntries(sharedHome);
+  const indexById = new Map(indexEntries.map((entry) => [entry.id, entry]));
+  const rows = [];
+
+  for (const bucketName of ["sessions", "archived_sessions"]) {
+    const root = path.join(sharedHome, bucketName);
+    if (!pathExists(root)) {
+      continue;
+    }
+
+    const stack = [root];
+    while (stack.length) {
+      const current = stack.pop();
+      const entries = fs.readdirSync(current, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+        if (!entry.isFile() || !/^rollout-.*\.jsonl$/i.test(entry.name)) {
+          continue;
+        }
+
+        const match = entry.name.match(
+          /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+        );
+        const rolloutId = match?.[1];
+        const indexEntry = rolloutId ? indexById.get(rolloutId) : null;
+
+        const row = parseThreadRowFromRollout(fullPath, indexEntry?.thread_name || "");
+        if (!row.id) {
+          continue;
+        }
+
+        row.archived = bucketName === "archived_sessions" ? 1 : 0;
+        row.archived_at = row.archived ? row.updated_at : null;
+        row.updated_at = Math.max(row.updated_at, toUnixTimestampSeconds(indexEntry?.updated_at || ""));
+        row.title = indexEntry?.thread_name || row.title;
+        row.rollout_path = path.join(targetHome, bucketName, path.relative(root, fullPath));
+        rows.push(row);
+      }
+    }
+  }
+
+  return rows;
+}
+
+function syncSharedThreadMetadata(sharedHome, targetHome, { scope = "recent" } = {}) {
+  const targetDbPath = path.join(targetHome, "state_5.sqlite");
+  if (!pathExists(targetDbPath)) {
+    return { scanned: 0, upserted: 0, skipped: "missing_state_db" };
+  }
+
+  const rows =
+    scope === "all"
+      ? buildAllSharedThreadRows(sharedHome, targetHome)
+      : buildRecentSharedThreadRows(sharedHome, targetHome);
+  if (!rows.length) {
+    return { scanned: 0, upserted: 0, skipped: "no_recent_threads" };
+  }
+
+  function applyRows(dbPath) {
+    const db = new DatabaseSync(dbPath);
+    try {
+      const columns = db.prepare(`PRAGMA table_info("threads")`).all().map((row) => row.name);
+      if (!columns.length) {
+        return { scanned: rows.length, upserted: 0, skipped: "missing_threads_table" };
+      }
+
+      const usableColumns = columns.filter((name) =>
+        rows.some((row) => Object.hasOwn(row, name)),
+      );
+      const placeholders = usableColumns.map(() => "?").join(", ");
+      const updateClause = usableColumns
+        .filter((name) => name !== "id")
+        .map((name) => `${name} = excluded.${name}`)
+        .join(", ");
+
+      const sql = `
+        INSERT INTO threads (${usableColumns.join(", ")})
+        VALUES (${placeholders})
+        ON CONFLICT(id) DO UPDATE SET ${updateClause}
+      `;
+      const statement = db.prepare(sql);
+
+      db.exec("BEGIN");
+      try {
+        for (const row of rows) {
+          statement.run(
+            ...usableColumns.map((name) => (Object.hasOwn(row, name) ? row[name] : null)),
+          );
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+
+      return { scanned: rows.length, upserted: rows.length, scope };
+    } finally {
+      db.close();
+    }
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-thread-sync-"));
+  const tmpDbPath = path.join(tmpDir, "state_5.sqlite");
+  try {
+    copyDatabaseWithSidecars(targetDbPath, tmpDbPath);
+    const result = applyRows(tmpDbPath);
+    removeDatabaseSidecars(targetDbPath);
+    fs.copyFileSync(tmpDbPath, targetDbPath);
+    return {
+      ...result,
+      repaired_from_copy: true,
+    };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function getManagedThreadSyncTargets(provider) {
+  return Array.from(
+    new Set([provider.third_party_home, provider.shared_codex_home, OFFICIAL_CLI_HOME]),
+  );
+}
+
+function syncManagedThreadMetadata(provider, { scope = "recent" } = {}) {
+  const results = [];
+  for (const targetHome of getManagedThreadSyncTargets(provider)) {
+    try {
+      results.push({
+        targetHome,
+        ...syncSharedThreadMetadata(provider.shared_codex_home, targetHome, { scope }),
+      });
+    } catch (error) {
+      results.push({
+        targetHome,
+        scanned: 0,
+        upserted: 0,
+        scope,
+        error: error.message,
+      });
+    }
+  }
+  return results;
 }
 
 function readPlainCodexModeState() {
@@ -426,6 +799,14 @@ function thirdPartyConfigPath(provider) {
   return path.join(provider.third_party_home, "config.toml");
 }
 
+function sharedSessionIndexLinkPath(provider) {
+  return path.join(provider.third_party_home, SHARED_SESSION_INDEX_FILE);
+}
+
+function sharedSessionIndexTargetPath(provider) {
+  return path.join(provider.shared_codex_home, SHARED_SESSION_INDEX_FILE);
+}
+
 function sharedSessionLinkPath(provider, relativePath) {
   return path.join(provider.third_party_home, relativePath);
 }
@@ -452,6 +833,23 @@ function pathResolvesTo(filePath, targetPath) {
     return false;
   }
   return path.resolve(left) === path.resolve(right);
+}
+
+function filesShareIdentity(filePath, targetPath) {
+  try {
+    const left = fs.statSync(filePath);
+    const right = fs.statSync(targetPath);
+    return (
+      Number.isFinite(left.dev) &&
+      Number.isFinite(left.ino) &&
+      Number.isFinite(right.dev) &&
+      Number.isFinite(right.ino) &&
+      left.dev === right.dev &&
+      left.ino === right.ino
+    );
+  } catch {
+    return false;
+  }
 }
 
 function loadState() {
@@ -871,6 +1269,13 @@ async function activateProfile(state, profileId, { silent = false, skipProcessCh
   backupFileIfExists(thirdPartyAuthPath(provider), "codex3-auth.json.bak");
   fs.copyFileSync(source, thirdPartyAuthPath(provider));
   writeThirdPartyConfig(provider);
+  try {
+    syncManagedThreadMetadata(provider, { scope: "recent" });
+  } catch (error) {
+    if (!silent) {
+      console.warn(`Warning: failed to sync recent shared threads: ${error.message}`);
+    }
+  }
 
   profile.last_used_at = isoNow();
   state.profiles[profile.profile_id] = profile;
@@ -897,7 +1302,7 @@ async function setPlainCodexThirdPartyMode(
   const activeProfileId = state.active_profile_id;
   if (!activeProfileId) {
     throw new Error(
-      "No active third-party profile is selected. Use Manage first so codex3_m knows which profile plain codex should follow.",
+      "No active third-party profile is selected. Use Manage first so codex3_m knows which profile codex.exe should follow.",
     );
   }
 
@@ -920,7 +1325,7 @@ async function setPlainCodexThirdPartyMode(
   if (!silent) {
     const profile = requireProfile(state, activeProfileId);
     console.log(
-      `Plain codex now follows codex3 using third-party profile: ${profile.alias} | ${readSavedProfileMaskedKey(profile.profile_id)}`,
+      `codex.exe now makes Desktop follow the third-party lane managed by codex3_m: ${profile.alias} | ${readSavedProfileMaskedKey(profile.profile_id)}`,
     );
     if (skipProcessCheck) {
       console.log(
@@ -1178,7 +1583,7 @@ function getSummaryLines(state) {
     `Provider: ${provider.provider_name} | ${provider.base_url}`,
     `Model: ${provider.model} | review ${provider.review_model}`,
     `Active profile: ${activeProfile ? `${activeProfile.alias} | ${readSavedProfileMaskedKey(activeProfile.profile_id)}` : "(none)"}`,
-    `Saved third-party profiles: ${getProfiles(state).length}`,
+    `Saved third-party API key profiles: ${getProfiles(state).length}`,
   ];
 }
 
@@ -1532,8 +1937,8 @@ function printOverview(state) {
   console.log(`Shared Codex home: ${provider.shared_codex_home}`);
   console.log(`Provider: ${provider.provider_name} | ${provider.base_url}`);
   console.log(`Model: ${provider.model} | review ${provider.review_model}`);
-  console.log(`Plain codex mode: ${plainCodexMode}`);
-  console.log(`Saved profiles: ${getProfiles(state).length}`);
+  console.log(`Desktop follow mode: ${plainCodexMode}`);
+  console.log(`Saved third-party API key profiles: ${getProfiles(state).length}`);
   console.log(
     `Active profile: ${state.active_profile_id ? `${requireProfile(state, state.active_profile_id).alias} | ${readSavedProfileMaskedKey(state.active_profile_id)}` : "(none)"}`,
   );
@@ -1547,6 +1952,8 @@ function printOverview(state) {
   console.log("  codex3_m rename <profile-id> --alias <manual-name>");
   console.log("  codex3_m delete <profile-id> [--force]");
   console.log("  codex3_m use-codex3 [--force]");
+  console.log("  codex3_m mode show");
+  console.log("  codex3_m mode set <compat|stable-http>");
   console.log("  codex3_m provider show");
   console.log("  codex3_m provider set");
   console.log("  codex3_m doctor");
@@ -1634,7 +2041,7 @@ async function runManagePage() {
     const state = loadState();
     const selected = await selectChoice({
       title: "Manage",
-      description: "Enter applies the selected third-party profile locally. Tab opens Rename or Delete.",
+      description: "Enter applies the selected third-party API key profile locally. Tab opens Rename or Delete.",
       state,
       promptClass: ManageSelectPrompt,
       extraLines: ["Keys: Up/Down move | Enter apply locally | Tab more actions | Esc back"],
@@ -1671,8 +2078,8 @@ async function runProviderPage() {
     const state = loadState();
     const provider = normalizeProvider(state.provider);
     const choice = await selectChoice({
-      title: "Provider",
-      description: "Inspect or update the third-party provider settings and shared session home used by codex3.",
+      title: "Advanced Provider",
+      description: "Inspect or update advanced provider compatibility settings for codex3. Saved API key profiles remain the primary identity model.",
       state,
       choices: [
         {
@@ -1711,14 +2118,14 @@ async function runProviderPage() {
 
     if (choice === "show") {
       await selectChoice({
-        title: "Provider Settings",
+        title: "Advanced Provider Settings",
         description: "Esc returns.",
         state,
         choices: [
           { name: "command", message: `Command: ${provider.command_name}`, hint: "wrapper command" },
           { name: "mode", message: `Mode: ${providerModeCliLabel(provider.mode)}`, hint: "compat or stable-http" },
           { name: "home", message: `Third-party home: ${provider.third_party_home}`, hint: "stores third-party auth and provider mirror config" },
-          { name: "shared_home", message: `Shared Codex home: ${provider.shared_codex_home}`, hint: "sessions and archived_sessions are shared from here" },
+          { name: "shared_home", message: `Shared Codex home: ${provider.shared_codex_home}`, hint: "sessions, archived_sessions, and session_index.jsonl are shared from here" },
           { name: "provider", message: `Provider: ${provider.provider_name}`, hint: "derived from mode" },
           { name: "url", message: `Base URL: ${provider.base_url}`, hint: "OpenAI-compatible endpoint" },
           { name: "model", message: `Model: ${provider.model}`, hint: "default model" },
@@ -1736,7 +2143,7 @@ async function runProviderPage() {
       const modeChoice = await selectChoice({
         title: "Provider Mode",
         description:
-          "Compat uses provider id 'openai' for better session visibility. Stable HTTP uses a custom provider id with websockets disabled.",
+          "Compat uses provider id 'openai' for better session visibility. Stable HTTP uses a custom provider id with websockets disabled. Both remain advanced compatibility choices.",
         state,
         choices: [
           {
@@ -1828,7 +2235,7 @@ async function runLoginPage() {
     const state = loadState();
     const choice = await selectChoice({
       title: "Login",
-      description: "Save a third-party API key profile while keeping auth isolated and sharing session dirs.",
+      description: "Save a third-party API key profile while keeping auth isolated and sharing only the default session metadata targets.",
       state,
       choices: [
         {
@@ -1872,7 +2279,7 @@ async function runOverviewPage() {
     const state = loadState();
     const choice = await selectChoice({
       title: "Home",
-      description: "Choose the thing you want to do most often.",
+      description: "Manage third-party API key profiles for codex3. codex CLI stays official; codex.exe only changes which lane Desktop follows.",
       state,
       choices: [
         {
@@ -1883,17 +2290,17 @@ async function runOverviewPage() {
         {
           name: "manage",
           message: "Manage",
-          hint: "switch, rename, or delete saved third-party profiles",
+          hint: "switch, rename, or delete saved third-party API key profiles",
         },
         {
           name: "provider",
-          message: "Provider",
-          hint: "edit shared wrapper/provider settings for codex3",
+          message: "Provider (Advanced)",
+          hint: "advanced compatibility settings for codex3",
         },
         {
           name: "use_codex3",
-          message: "Plain codex -> codex3",
-          hint: "bridge ~/.codex to the active third-party profile without touching the launcher",
+          message: "codex.exe",
+          hint: "make Desktop follow the active third-party lane without touching the launcher path",
         },
         {
           name: "quit",
@@ -1916,9 +2323,9 @@ async function runOverviewPage() {
       continue;
     }
     if (choice === "use_codex3") {
-      const decision = await interactiveResolveForce("plain-codex bridge");
+      const decision = await interactiveResolveForce("codex.exe bridge");
       if (!decision.proceed) {
-        console.log("Plain codex bridge canceled.");
+        console.log("codex.exe bridge canceled.");
         continue;
       }
       await setPlainCodexThirdPartyMode(loadState(), { skipProcessCheck: decision.force });
@@ -1931,7 +2338,7 @@ async function runOverviewPage() {
 function printHelp() {
   console.log(`codex3_m
 
-Machine-local manager for isolated codex3 auth plus shared session directories on Windows.
+Machine-local manager for isolated third-party API key profiles on Windows.
 
 Usage:
   codex3_m
@@ -1942,6 +2349,7 @@ Usage:
   codex3_m rename <profile-id> --alias <manual-name>
   codex3_m delete <profile-id> [--force]
   codex3_m use-codex3 [--force]
+  codex3_m sync-threads [--all] [--force]
   codex3_m mode show
   codex3_m mode set <compat|stable-http>
   codex3_m provider show [--json]
@@ -1949,10 +2357,14 @@ Usage:
   codex3_m doctor
 
 Notes:
-  - Running plain 'codex3_m' opens a Home page with Login, Manage, Provider, Plain codex -> codex3, and Quit.
+  - Running plain 'codex3_m' opens a Home page with Login, Manage, Provider (Advanced), codex.exe, and Quit.
+  - codex3_m manages saved third-party API key profiles first; provider/mode settings are advanced compatibility tools.
+  - The codex3 CLI command always uses the isolated third-party home managed by codex3_m.
+  - The codex.exe action makes Desktop follow the active third-party lane; it does not replace the launcher or swap the whole home.
+  - The default shared targets are sessions, archived_sessions, and session_index.jsonl.
   - compat mode keeps third-party auth outside ~/.codex and aligns provider id with the built-in openai lane for better recent-session visibility.
   - stable-http mode uses a custom provider id with supports_websockets=false for gateways that reconnect too often.
-  - The provider mirror config lives under ~/.codex-apikey/config.toml by default and records the tutorial values applied to codex3.
+  - The provider mirror config lives under ~/.codex-apikey/config.toml by default and records the advanced provider settings applied to codex3.
   - Saved third-party API key profiles live under ~/.codex3-manager/profiles/.
 `);
 }
@@ -2049,9 +2461,9 @@ async function handleUseCodex3(state, args) {
   }
 
   if (!force && process.stdin.isTTY) {
-    const decision = await interactiveResolveForce("plain-codex bridge");
+    const decision = await interactiveResolveForce("codex.exe bridge");
     if (!decision.proceed) {
-      console.log("Plain codex bridge canceled.");
+      console.log("codex.exe bridge canceled.");
       return;
     }
     force = decision.force;
@@ -2219,7 +2631,7 @@ async function handleMode(state, args) {
 async function handleDoctor(state) {
   const { issues, warnings } = doctorReport(state);
   if (!issues.length) {
-    console.log("No obvious issues found.");
+    console.log("No blocking issues found for the third-party lane.");
     warnings.forEach((warning, index) => {
       console.log(`Warning ${index + 1}. ${warning}`);
     });
@@ -2233,6 +2645,49 @@ async function handleDoctor(state) {
     console.log(`Warning ${index + 1}. ${warning}`);
   });
   process.exitCode = 1;
+}
+
+async function handleSyncThreads(state, args) {
+  let force = false;
+  let scope = "recent";
+
+  for (const arg of args) {
+    if (arg === "--force") {
+      force = true;
+    } else if (arg === "--all") {
+      scope = "all";
+    } else if (arg === "--recent") {
+      scope = "recent";
+    } else {
+      throw new Error(`Unknown sync-threads option: ${arg}`);
+    }
+  }
+
+  const sessionIndexTargetPath = sharedSessionIndexTargetPath(provider);
+  const sessionIndexLinkPath = sharedSessionIndexLinkPath(provider);
+  if (!fs.existsSync(sessionIndexTargetPath)) {
+    warnings.push(`Shared session index target does not exist yet: ${sessionIndexTargetPath}`);
+  } else if (!fs.existsSync(sessionIndexLinkPath)) {
+    issues.push(`Shared session index is missing from third-party home: ${sessionIndexLinkPath}`);
+  } else if (!filesShareIdentity(sessionIndexLinkPath, sessionIndexTargetPath)) {
+    issues.push(
+      `Shared session index is not hard-linked to the shared Codex home: ${sessionIndexLinkPath} -> ${sessionIndexTargetPath}`,
+    );
+  }
+
+  if (!force) {
+    assertNoRunningCodexProcesses();
+  }
+
+  const provider = normalizeProvider(state.provider);
+  const results = syncManagedThreadMetadata(provider, { scope });
+  results.forEach((result) => {
+    if (result.error) {
+      console.log(`Failed to sync shared thread metadata into ${result.targetHome}: ${result.error}`);
+      return;
+    }
+    console.log(`Synced ${result.upserted} shared thread metadata row(s) into ${result.targetHome} using scope=${scope}.`);
+  });
 }
 
 async function handleCommand(args) {
@@ -2275,6 +2730,11 @@ async function handleCommand(args) {
 
   if (command === "use-codex3") {
     await handleUseCodex3(state, rest);
+    return;
+  }
+
+  if (command === "sync-threads") {
+    await handleSyncThreads(state, rest);
     return;
   }
 

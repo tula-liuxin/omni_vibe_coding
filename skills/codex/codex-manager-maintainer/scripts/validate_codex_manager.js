@@ -503,7 +503,7 @@ if (pathExists(officialAuthPath)) {
 
 if (plainCodexMode === PLAIN_CODEX_MODE_THIRD_PARTY) {
   warnings.push(
-    "Plain codex is intentionally bridged to the third-party provider right now, so official auth/config drift checks are relaxed until you switch back with codex_m.",
+    "Desktop is intentionally following the third-party lane right now, so official Desktop auth/config drift checks are relaxed until you switch back with codex_m.",
   );
 } else if (state?.active_official_profile?.kind === PROFILE_KIND_CHATGPT) {
   const activeTuple = state.tuples[state.active_official_profile.id];
@@ -569,7 +569,7 @@ const payload = {
 if (jsonMode) {
   console.log(JSON.stringify(payload, null, 2));
 } else if (issues.length === 0) {
-  console.log("No obvious issues found.");
+  console.log("No blocking issues found for the official lane.");
   for (const warning of warnings) {
     console.log(`Warning: ${warning}`);
   }

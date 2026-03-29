@@ -1,99 +1,85 @@
 ---
 name: codex-manager-maintainer
-description: Install, repair, upgrade, and extend codex_m as a machine-local Codex login/workspace manager with a stable effect-first UX across environments. Use when Codex needs to create codex_m on a new computer, migrate an existing codex_m setup, fix launcher/auth/config bugs, compact fake or duplicate saved logins, switch the login/auth that normal `codex.exe` uses without disturbing shared sessions/settings, or add platform-specific support while keeping Windows, macOS, and Linux implementation details isolated. Trigger for requests about codex_m installation, maintenance, upgrade, repair, portability, cross-platform support, codex.exe login/workspace switching behavior, or codex_m skill-driven bootstrap on another machine.
+description: Maintain `codex_m` as the machine-local manager for official Codex identities. Use when Codex needs to install, repair, upgrade, or explain `codex_m`, switch the official identity that normal `codex`/Desktop should follow, preserve saved ChatGPT snapshots and official API key profiles, or keep the behavior portable across Windows, macOS, and Linux.
 ---
 
 # Codex Manager Maintainer
 
-## Overview
+## Purpose
 
-- Maintain `codex_m` as a machine-local tool, not as a project-local artifact.
-- Preserve the user-facing behavior contract even when the implementation changes by platform.
-- Prefer effect parity over code parity.
-- Treat shared logic and user-facing behavior as the durable core.
-- Treat saved login snapshots as durable data with explicit identity rules, not as disposable cache.
-- Treat normal `codex.exe` login switching as an auth-layer operation over one shared `~/.codex` home, not as a whole-home swap.
-- If the active platform does not yet have bundled installer/runtime assets, build the missing platform adapter from the common contract instead of blocking on missing scaffolding.
+- Keep `codex_m` focused on the official Codex lane.
+- Treat saved official identities as durable user data.
+- Preserve behavior first, even when platform adapters change.
+- Keep public contract and platform-specific implementation separate.
+
+## Stable Responsibilities
+
+`codex_m` is responsible for all official identities:
+
+- official ChatGPT login snapshots
+- official API key profiles
+- applying one saved official identity to the official Codex lane
+- making Desktop `codex.exe` follow the `codex_m`-managed official identity
+
+`codex_m` is not a third-party provider manager. Third-party API key flows belong to `codex3_m`.
+
+## Public Contract
+
+- Home stays focused on the official lane: `Login`, `Account Manage`, `API Key Manage`, `codex.exe`, `Quit`.
+- `Login` can save either an official ChatGPT snapshot or an official API key profile.
+- `Account Manage` operates on saved official ChatGPT snapshots only.
+- `API Key Manage` operates on saved official API key profiles only.
+- `codex.exe` means "make the Desktop lane follow the official identity managed by `codex_m`".
+- Switching the official identity updates auth carriers and managed config keys; it does not mean swapping the whole Codex home.
+- Shared session/history/thread metadata should stay aligned as much as safely possible.
+- Auth carriers and managed config keys stay separate from shared session/history state.
+- SQLite thread/sidebar databases must not be live-shared across homes; sync or backfill is acceptable.
 
 ## Workflow
 
-1. Run `scripts/detect_environment.js` first.
-2. Read `references/common-contract.md` and `references/auth-and-state.md`.
-3. Read only the current platform reference:
+1. Run `scripts/detect_environment.js`.
+2. Read `references/common-contract.md`.
+3. Read `references/auth-and-state.md`.
+4. Read only the active platform reference:
    - Windows: `references/windows-win11.md`
    - Linux: `references/ubuntu-linux.md`
    - macOS: `references/macos.md`
-4. If the task involves upstream Codex behavior drift, upgrades, or unexplained auth/workspace breakage, also read `references/upstream-watchpoints.md`.
-5. Classify the task as one of:
+5. Read `references/upstream-watchpoints.md` only when upstream Codex behavior appears to have drifted.
+6. Classify the task:
    - install `codex_m`
    - repair broken `codex_m`
    - upgrade an existing `codex_m`
-   - explain or debug login/workspace behavior
+   - explain or debug official identity behavior
    - add or refine platform support
-6. Use bundled scripts and assets when they fit the current platform. Do not rewrite Windows launchers or runtime files from scratch when the bundled Windows assets already match the requested behavior.
-7. When the task involves login persistence, tuple overwrite, or workspace/account confusion, inspect all three layers together:
-   - tuple identity and compaction rules in runtime state
-   - saved auth snapshot storage layout
-   - activation/config behavior in official `auth.json` and `config.toml`
-8. When the task specifically involves switching the login that plain `codex.exe` should use, apply the saved official profile by updating the official auth/config carriers only:
-   - swap `~/.codex/auth.json`
-   - patch only the managed top-level keys in `~/.codex/config.toml`
-   - leave shared `~/.codex/sessions`, history, trust, skills, and other unrelated settings in place
-9. When the task involves official API keys, treat them as a separate official profile type:
-   - ChatGPT snapshots stay under `tuples`
-   - file-backed official API key profiles stay under `official_api_key_profiles`
-   - `active_official_profile` is the source of truth for what normal `codex` should use
-10. If the active platform does not yet have a bundled installer/runtime, derive the implementation from the common contract plus the active platform reference, keep unrelated platform detail out of the explanation, and persist the new adapter cleanly under `scripts/`, `assets/`, and `references/`.
-11. Validate behavior, not just file presence.
+7. Validate behavior, not just file presence.
 
-## Stable Contract
+## Reading Rules
 
-Keep these behaviors stable unless the user explicitly asks to change them:
-
-- Home shows `Login`, `Account Manage`, `API Key Manage`, `Plain codex -> codex`, `Quit`.
-- `Login now` is the main login path.
-- `Use current signed-in Codex` is an advanced recovery/import path.
-- After login or import, prompt for a manual workspace name.
-- `Account Manage` lists only real saved ChatGPT login snapshots.
-- `API Key Manage` lists only saved official API key profiles.
-- `Plain codex -> codex` restores plain `codex` back to the official `~/.codex` state without changing the launcher.
-- Switching the login that plain `codex.exe` uses must not relocate or replace the shared `~/.codex` session/history/settings home.
-- Distinct `(account_email, chatgpt_account_id)` snapshots must remain separately saved and manageable when the email differs.
-- `Enter` switches to the selected profile in the current manage section.
-- `Tab` opens section-appropriate actions such as `Rename`, `Logout`, or `Delete`.
-- `Logout` deletes the saved snapshot, not shared sessions/history/config.
-- Visible org ids from the token are informational hints only.
-- Real switching identity is keyed by `chatgpt_account_id`, not `organizations[].id`.
-
-## Platform Loading Rules
-
-- Do not load Windows implementation detail on Linux or macOS unless the user is explicitly asking to port the Windows implementation.
-- Do not treat Linux/macOS references as full implementations unless they actually contain the needed installer/runtime details.
-- When adding a new platform, keep the common contract unchanged and add platform-specific scripts/assets instead of branching the whole workflow in `SKILL.md`.
-- If the current machine is on a platform without a finished adapter, synthesize only that platform's implementation details and keep them isolated from other platforms.
+- Use `SKILL.md` for the stable function contract.
+- Use `references/common-contract.md` for public behavior shared across platforms.
+- Use `references/auth-and-state.md` for identity and carrier rules.
+- Use the platform reference for paths, wrapper mechanics, directory sharing, and installer/runtime details.
+- Do not move Windows-specific path mechanics back into `SKILL.md`.
 
 ## Resources
 
 - `scripts/detect_environment.js`
-  Use to inspect OS, shell, expected launcher paths, Codex paths, and whether `codex_m` already exists.
+  Inspect OS, shell, expected launcher paths, Codex paths, and whether `codex_m` already exists.
 - `scripts/validate_codex_manager.js`
-  Use to verify an installed `codex_m` footprint, catch auth/config placement problems, detect duplicate saved snapshot identities, and detect API-key-vs-workspace residue.
+  Validate the official lane, saved identity state, managed config placement, and Desktop follow-mode assumptions.
 - `scripts/install_windows.ps1`
-  Use on Windows to install or update `codex_m` from bundled assets.
+  Install or update the current Windows adapter.
 - `assets/windows-runtime/`
-  Treat as the current Windows baseline implementation for `codex_m`.
-- `references/upstream-watchpoints.md`
-  Read before changing the public contract in response to a Codex CLI update.
+  Current Windows runtime for `codex_m`.
 - `references/troubleshooting.md`
-  Read when behavior appears correct locally but Codex still uses the wrong login/workspace.
+  Use when behavior is wrong even though the expected files appear to exist.
 
 ## Guardrails
 
-- Do not use `organizations[].id` as a real switch target.
-- Do not collapse different emails into one saved snapshot just because they share one real login workspace id.
-- Do not delete shared Codex session/history state as part of normal logout or repair.
-- Do not assume launcher paths or shell wrappers are identical across platforms.
-- Do not overwrite unrelated `~/.codex/config.toml` content; only patch the managed keys.
-- Do not implement `codex.exe` login switching by swapping the whole `CODEX_HOME` or by moving session/history directories.
-- Do not require Ubuntu/macOS to mimic Windows launcher mechanics; preserve behavior, not file-layout symmetry.
-- If upstream Codex behavior appears to have changed, update the platform adapter and validation logic before changing the public contract.
+- Do not treat `organizations[].id` as a real switch target.
+- Do not collapse different `(account_email, chatgpt_account_id)` snapshots into one saved identity.
+- Do not delete shared sessions/history/trust/skills during normal logout, repair, or switching.
+- Do not describe `codex.exe` follow-mode as launcher replacement or whole-home replacement.
+- Do not overwrite unrelated config keys; patch only the managed top-level keys.
+- Do not present the current Windows directory layout as a cross-platform contract.
+- If upstream Codex behavior changes, update the platform adapter and validation logic before changing the public contract.

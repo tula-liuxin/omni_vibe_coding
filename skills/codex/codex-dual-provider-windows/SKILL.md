@@ -1,103 +1,80 @@
 ---
 name: codex-dual-provider-windows
-description: Configure and maintain a split Codex CLI setup on Windows where official codex remains unchanged, `codex3` keeps third-party auth/config isolated under `~/.codex-apikey`, shares session directories from `~/.codex`, and `codex3_m` can switch between `compat` and `stable-http` provider modes while the managers can optionally steer which login/auth plain `codex.exe` should use. Use when users ask to separate official and third-party accounts, add or update codex3 login behavior, maximize safe session sharing without mixing auth state, switch the login used by `codex.exe`, or troubleshoot provider routing/auth/config-encoding issues.
+description: Maintain the Windows split setup where official Codex stays official while `codex3` and `codex3_m` manage a third-party API key lane. Use when Codex needs to install, repair, upgrade, or explain `codex3`/`codex3_m`, keep third-party auth isolated, make Desktop `codex.exe` follow the third-party lane, or preserve safe session sharing without mixing auth carriers.
 ---
 
 # Codex Dual Provider Windows
 
-## Overview
+## Purpose
 
-- Keep official `codex` behavior unchanged.
-- Create and maintain a dedicated third-party command (default `codex3`).
-- Create and maintain a dedicated third-party manager command `codex3_m`.
-- Keep third-party auth and provider metadata under a separate home for `codex3` itself.
-- Share `sessions/`, `archived_sessions/`, and `session_index.jsonl` from the official `~/.codex` home into the third-party home.
-- Support two third-party provider modes:
-  - `compat`: provider id stays aligned with the built-in `openai` lane for better recent-session visibility.
-  - `stable-http`: provider id switches to a custom id with websocket support disabled for gateways that reconnect too often.
-- Support explicit switching of the login used by plain `codex.exe` without replacing the `codex` launcher.
-- Expose a quick `Plain codex -> codex3` action from `codex3_m` that temporarily bridges plain `codex` to the active third-party profile without replacing the launcher.
-- When the user provides a provider tutorial, treat that tutorial as the source of truth for the third-party config shape and values.
+- Keep the official lane understandable and unchanged.
+- Keep third-party auth/config isolated from the official lane.
+- Treat `codex3_m` as the manager for third-party API key profiles.
+- Keep session/history sharing as broad as safely possible without mixing auth carriers.
+
+## Stable Responsibilities
+
+`codex3_m` is responsible for:
+
+- saving and switching third-party API key profiles
+- applying the active third-party API key profile to `codex3`
+- making Desktop `codex.exe` follow the third-party lane when requested
+- maintaining the split Windows adapter where official and third-party auth/config remain separated
+
+Advanced provider settings such as provider mode, tutorial mapping, base URL, model, and wrapper reinstall remain supported, but they are advanced compatibility tools, not the primary public identity contract.
+
+## Public Contract
+
+- Official `codex` stays on the official lane.
+- `codex3` stays on the third-party lane.
+- `codex3_m` manages saved third-party API key profiles.
+- `codex.exe` means "make the Desktop lane follow the active third-party lane".
+- Third-party auth/config remain isolated from the official lane.
+- Default shared state is limited to:
+  - `sessions`
+  - `archived_sessions`
+  - `session_index.jsonl`
+- SQLite sidebar/thread databases must not be live-shared.
+- If sidebar/thread views need alignment, use synchronization or backfill instead of direct SQLite sharing.
 
 ## Workflow
 
-1. Confirm target values before changes:
-   - command name (default `codex3`)
-   - third-party home (default `%USERPROFILE%\\.codex-apikey`)
-   - shared Codex home for session directories (default `%USERPROFILE%\\.codex`)
-   - provider mode (`compat` or `stable-http`)
-   - tutorial-provided provider name, base URL, model, review model, reasoning effort, and other required top-of-file settings
-2. If the user supplies a screenshot or pasted tutorial, extract the values from that tutorial first.
-3. Map the tutorial's provider values onto the split-lane design:
-   - third-party auth stays under `%USERPROFILE%\\.codex-apikey`
-   - `codex3` itself runs from that third-party home
-   - `codex3` shares `sessions/` and `archived_sessions/` from `%USERPROFILE%\\.codex`
-   - `compat` is the default when the goal is better recent-session visibility
-   - `stable-http` is the recovery path when the gateway keeps disconnecting websocket streams
-   - plain `codex` can be temporarily bridged through the managers when the user wants one-command switching
-4. Run `scripts/install_windows.ps1` to install or update `codex3_m` and the third-party wrapper.
-5. Use `codex3_m` to manage third-party provider settings, mode, and saved API key profiles.
-6. Run `<command> login`, paste API key, and press Enter, or activate a saved profile from `codex3_m`.
-7. Verify separation:
-   - `codex exec --skip-git-repo-check "hello"` should show `provider: openai`.
-   - `<command> exec --skip-git-repo-check "hello"` should show third-party provider.
-   - `%USERPROFILE%\\.codex-apikey\\sessions` should resolve into `%USERPROFILE%\\.codex\\sessions`.
-8. If the task is specifically about switching which login plain `codex.exe` should use, make that intent explicit:
-   - official-login switching belongs to `codex_m`
-   - temporary third-party bridging belongs to `codex3_m`
-   - neither path should imply deleting or relocating the shared official sessions/history tree
-9. If validation fails, follow `references/troubleshooting.md`.
+1. Read `references/contract.md`.
+2. Read `references/windows-win11.md`.
+3. Read `references/troubleshooting.md` when validation fails or behavior drifts.
+4. Confirm whether the task is about:
+   - install or repair
+   - third-party API key profile management
+   - Desktop follow-mode switching
+   - advanced provider compatibility (`provider` / `mode`)
+5. Use bundled installers and validators when possible.
+6. Validate separation, sharing, and Desktop follow-mode behavior after changes.
 
-## Deterministic Behavior
+## Reading Rules
 
-- Set `CODEX_HOME` to the third-party home in wrapper startup for `codex3`.
-- Restore `CODEX_HOME` after the wrapper exits.
-- Create directory junctions for `sessions/` and `archived_sessions/` from the third-party home into the shared official home.
-- Create a hard link for `session_index.jsonl` so recent-session discovery stays aligned.
-- Remove inherited `OPENAI_API_KEY` during third-party child runs, then restore it after exit.
-- Force provider routing at runtime with `-c` overrides.
-- In `compat` mode, route through the built-in `openai` lane and set `openai_base_url`.
-- In `stable-http` mode, route through a custom provider id with `supports_websockets = false`.
-- Keep `codex` untouched; only create/update `<command>.ps1` and `<command>.cmd`.
-- Keep `codex.exe` login switching separate from `codex3`'s isolated auth/config home so the official and third-party lanes remain understandable.
-- Implement `<command> login` to write `auth.json` in the tutorial-compatible `OPENAI_API_KEY` file-backed shape.
-- Implement `<command> login status` as local-file check only (no remote dependency).
-- Write `auth.json`, `config.toml`, and wrapper scripts as UTF-8 without BOM.
-- Ensure the tutorial-required provider block is mirrored under the third-party home for inspection and repair.
-
-## Script Usage
-
-Run from the skill folder:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install_windows.ps1
-```
-
-Common overrides:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install_windows.ps1 `
-  -ManagerCommandName codex3_m `
-  -ThirdPartyCommandName codex3
-```
-
-If the tutorial changes, update the installed provider settings with `codex3_m provider set ...` or `codex3_m mode set ...` so future upgrades stay aligned with the tutorial instead of old hardcoded defaults.
+- Use `SKILL.md` for the stable function contract.
+- Use `references/contract.md` for split-lane behavior and sharing rules.
+- Use `references/windows-win11.md` for current Windows paths, wrappers, and installer/runtime detail.
+- Keep provider tutorial mapping and wrapper mechanics out of `SKILL.md`.
 
 ## Resources
 
-- `scripts/install_windows.ps1`: Install/update `codex3_m` plus the third-party wrapper and plain-codex bridge behavior.
-- `scripts/install_codex3_wrapper.ps1`: Install/update the third-party launcher for `codex3`, including shared session junctions.
-- `scripts/validate_codex3_manager.js`: Validate `codex3_m`, the wrapper, plain-codex bridge state, and third-party auth placement.
-- `assets/windows-runtime/`: Machine-local runtime for `codex3_m`.
-- `references/troubleshooting.md`: Diagnose common split-setup failures quickly.
+- `scripts/install_windows.ps1`
+  Install or update `codex3_m` plus the Windows split-lane adapter.
+- `scripts/install_codex3_wrapper.ps1`
+  Install or update the `codex3` wrapper and session-sharing links.
+- `scripts/validate_codex3_manager.js`
+  Validate saved third-party profiles, wrapper state, shared session targets, and Desktop follow-mode assumptions.
+- `assets/windows-runtime/`
+  Current Windows runtime for `codex3_m`.
+- `references/troubleshooting.md`
+  Use for common split-lane failures and provider drift.
 
 ## Guardrails
 
-- Do not replace or modify the existing `codex` launcher.
-- Do not store third-party key in official `~\\.codex` path.
-- Do not let `codex3` or `codex3_m` rewrite official `~\\.codex/auth.json` or official manager state.
-- Do not describe `codex.exe` login switching as a full shared-home replacement when the actual intent is to swap auth locally.
-- Do not rewrite `codex3` into a full shared-home auth path; keep auth/config isolated even when session directories are shared.
-- Do not prefer `compat` mode blindly when the gateway is known to close websocket streams before `response.completed`; switch to `stable-http`.
-- Do not silently ignore a user-supplied tutorial when its values differ from the current defaults; update the installer/runtime to match the tutorial instead.
-- If a key is exposed in chat or logs, rotate it and rerun `<command> login`.
+- Do not store third-party auth inside the official home.
+- Do not let `codex3_m` rewrite official manager state except for the explicit Desktop follow-mode bridge.
+- Do not describe `codex.exe` follow-mode as launcher replacement or whole-home replacement.
+- Do not expand third-party default sharing beyond `sessions`, `archived_sessions`, and `session_index.jsonl` unless the task explicitly requires it and safety is clear.
+- Do not live-share SQLite `state_5.sqlite*` files between official and third-party homes.
+- Do not silently ignore user-supplied provider tutorial values when advanced provider compatibility is the task.
