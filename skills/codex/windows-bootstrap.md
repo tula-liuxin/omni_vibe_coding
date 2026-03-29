@@ -138,8 +138,8 @@ powershell -ExecutionPolicy Bypass -File `
 
 ```powershell
 codex3_m provider set `
+  --mode compat `
   --command-name codex3 `
-  --provider-name 'OpenAI' `
   --base-url 'https://example.com' `
   --model 'gpt-5.4' `
   --review-model 'gpt-5.4' `
