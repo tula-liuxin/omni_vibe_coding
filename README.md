@@ -35,6 +35,19 @@
   - `mcp/connectors/`
   - `mcp/templates/`
 
+## 如果要在另一台 Windows 电脑复用当前 Codex 资产
+
+先明确三件事：
+
+- `E:\leo\my_github\omni_vibe_coding` 只是当前机器上的一个仓库检出示例，不是必须固定的绝对路径。另一台电脑可以放在任意路径，例如 `D:\workspace\omni_vibe_coding`。
+- 真正让 Codex 识别这些 skill 的稳定位置，仍然是 `~/.codex/skills/custom/<skill-name>/` 下面的部署副本。
+- `codex_m`、`codex3_m`、`codex3` 安装后真正运行依赖的是用户目录下的 `~/.codex`、`~/.codex-manager`、`~/.codex3-manager`、`~/.codex-apikey` 和 `%APPDATA%\npm`，而不是仓库持续停留在 `E:` 盘。
+
+推荐从下面两份文档开始：
+
+- [`skills/codex/README.md`](./skills/codex/README.md)
+- [`skills/codex/windows-bootstrap.md`](./skills/codex/windows-bootstrap.md)
+
 ## 命名空间约定
 
 仓库按“分类 + 命名空间”组织，而不是把所有条目都直接堆在分类根目录：
@@ -52,13 +65,24 @@ mcp/<family>/<entry-name>/
 
 仓库保存的是源码和维护入口，不是机器本地部署结果。
 
-例如下面这些路径都属于“部署态”，不是仓库结构本身：
+当前机器上的源码检出示例：
+
+- `E:\leo\my_github\omni_vibe_coding`
+
+另一台电脑上的源码检出路径可以不同，例如：
+
+- `D:\workspace\omni_vibe_coding`
+- `C:\dev\omni_vibe_coding`
+
+下面这些路径则属于“部署态”，不是仓库结构本身：
 
 - `~/.codex/skills/custom/...`
 - `~/.codex-manager/...`
 - `~/.codex3-manager/...`
+- `~/.codex-apikey/...`
 - `%APPDATA%\npm\codex_m.ps1`
 - `%APPDATA%\npm\codex3.ps1`
+- `%APPDATA%\npm\codex3_m.ps1`
 
 如果为了排障修改了本机部署副本，应把变更回写到仓库源目录，再以仓库版本为准。
 
@@ -71,5 +95,6 @@ mcp/<family>/<entry-name>/
    - [`mcp/README.md`](./mcp/README.md)
 3. 如果是 Codex 相关资产，再进入对应命名空间：
    - [`skills/codex/README.md`](./skills/codex/README.md)
+   - [`skills/codex/windows-bootstrap.md`](./skills/codex/windows-bootstrap.md)
    - [`tools/codex/README.md`](./tools/codex/README.md)
 4. 最后进入具体条目的 `README.md` 或 `SKILL.md`。
