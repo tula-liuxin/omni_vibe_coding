@@ -13,6 +13,7 @@
 - Switching the official identity must not require relocating the entire Codex home.
 - ChatGPT snapshots and official API key profiles are both file-backed saved identities.
 - Desktop follow-mode and CLI follow-mode may use different current homes on some platforms; that is an adapter detail, not the public contract.
+- On the current Windows adapter, Desktop uses `~/.codex` while the plain `codex` CLI should use `~/.codex-official` through the managed launcher wrapper.
 
 ## Managed Config
 

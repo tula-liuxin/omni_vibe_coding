@@ -7,7 +7,8 @@ Load this file only for the Windows adapter.
 - Current manager home: `%USERPROFILE%\.codex3-manager`
 - Current third-party home: `%USERPROFILE%\.codex-apikey`
 - Current shared Codex home: `%USERPROFILE%\.codex`
-- Current launchers: `%APPDATA%\npm\codex3_m.ps1`, `%APPDATA%\npm\codex3_m.cmd`, `%APPDATA%\npm\codex3.ps1`, `%APPDATA%\npm\codex3.cmd`
+- Current official CLI home used by the wrapper: `%USERPROFILE%\.codex-official`
+- Current launchers: `%APPDATA%\npm\codex.ps1`, `%APPDATA%\npm\codex.cmd`, `%APPDATA%\npm\codex3_m.ps1`, `%APPDATA%\npm\codex3_m.cmd`, `%APPDATA%\npm\codex3.ps1`, `%APPDATA%\npm\codex3.cmd`
 
 These paths are current Windows implementation details, not cross-platform guarantees.
 
@@ -39,6 +40,7 @@ codex3 login status
 Expected:
 
 - `codex3_m` launchers exist.
+- plain `codex` launcher is wrapped to pin `CODEX_HOME` to `%USERPROFILE%\.codex-official`.
 - `codex3` wrapper exists.
 - third-party auth/config stay under the third-party home.
 - shared session targets resolve to the shared Codex home.

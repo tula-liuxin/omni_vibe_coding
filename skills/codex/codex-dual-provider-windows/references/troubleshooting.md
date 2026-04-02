@@ -23,6 +23,7 @@ Expected:
 - `codex3` keeps third-party auth/config under `%userprofile%\\.codex-apikey`.
 - `codex3` shares `sessions/`, `archived_sessions/`, and `session_index.jsonl` with the shared Codex home under `%userprofile%\\.codex`.
 - `codex3_m use-codex3 --force` is the thing behind the `codex.exe to use` action; it only changes the Desktop lane to follow the active third-party profile.
+- If plain `codex` also switches provider after that action, the managed plain `codex` launcher is missing or not pinned to `~/.codex-official`.
 
 ## Symptom: `codex3` is slow or keeps showing `Reconnecting...`
 
@@ -65,6 +66,35 @@ If the provider tutorial shows examples under `%userprofile%\\.codex\\config.tom
 - run `codex3` with that third-party auth/config while sharing session directories from `%userprofile%\\.codex`,
 - use the `codex.exe to use` manager action only when you want Desktop `codex.exe` to follow the third-party lane,
 - and leave official `~\\.codex\\auth.json` untouched.
+
+## Symptom: `codex.exe to use` also changes the plain `codex` CLI
+
+Likely cause:
+
+- The managed plain `codex` launcher is missing or still reads `~/.codex` directly.
+- Without the `~/.codex-official` wrapper, Desktop follow-mode and CLI follow-mode collapse into the same home.
+
+Fix:
+
+1. Reinstall or repair `codex_m` so it rewrites the plain `codex` launcher:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$HOME\.codex\skills\custom\codex-manager-maintainer\scripts\install_windows.ps1"
+```
+
+2. Verify the launcher now pins `CODEX_HOME` to `~/.codex-official`:
+
+```powershell
+Select-String -Path "$env:APPDATA\npm\codex.ps1" -Pattern "\.codex-official","CODEX_HOME"
+Select-String -Path "$env:APPDATA\npm\codex.cmd" -Pattern "\.codex-official","CODEX_HOME"
+node "$HOME\.codex\skills\custom\codex-manager-maintainer\scripts\validate_codex_manager.js"
+```
+
+Expected:
+
+- `codex.ps1` and `codex.cmd` both mention `CODEX_HOME` and `.codex-official`.
+- `validate_codex_manager.js` no longer reports launcher drift.
+- After that, `codex3_m use-codex3 --force` only changes Desktop `codex.exe`; plain `codex` stays on the official CLI lane.
 
 ## Symptom: `codex3` does not see sessions created by plain `codex`
 

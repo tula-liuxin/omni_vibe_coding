@@ -21,6 +21,10 @@ function resolveOfficialHome() {
   return path.join(os.homedir(), ".codex");
 }
 
+function resolveOfficialCliHome() {
+  return path.join(os.homedir(), ".codex-official");
+}
+
 function resolveEffectiveCodexHome() {
   if (process.env.CODEX_HOME && path.isAbsolute(process.env.CODEX_HOME)) {
     return process.env.CODEX_HOME;
@@ -262,6 +266,7 @@ $machine = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "Machine")
 const jsonMode = process.argv.includes("--json");
 const managerHome = resolveManagerHome();
 const officialHome = resolveOfficialHome();
+const officialCliHome = resolveOfficialCliHome();
 const effectiveCodexHome = resolveEffectiveCodexHome();
 const plainCodexModeState = readPlainCodexModeState(managerHome);
 const plainCodexMode = plainCodexModeState?.mode || "official";
@@ -295,9 +300,31 @@ if (process.platform === "win32") {
   for (const launcherFile of [
     path.join(launcherDir, "codex_m.ps1"),
     path.join(launcherDir, "codex_m.cmd"),
+    path.join(launcherDir, "codex.ps1"),
+    path.join(launcherDir, "codex.cmd"),
   ]) {
     if (!pathExists(launcherFile)) {
       issues.push(`Missing launcher: ${launcherFile}`);
+    }
+  }
+
+  const codexPs1Path = path.join(launcherDir, "codex.ps1");
+  const codexCmdPath = path.join(launcherDir, "codex.cmd");
+
+  if (pathExists(codexPs1Path)) {
+    const codexPs1Text = readText(codexPs1Path);
+    if (!codexPs1Text.includes("codex_m managed official codex CLI wrapper")) {
+      issues.push("codex.ps1 is not the managed official CLI wrapper.");
+    }
+    if (!codexPs1Text.includes("CODEX_HOME") || !codexPs1Text.includes(officialCliHome)) {
+      issues.push(`codex.ps1 does not pin CODEX_HOME to ${officialCliHome}.`);
+    }
+  }
+
+  if (pathExists(codexCmdPath)) {
+    const codexCmdText = readText(codexCmdPath);
+    if (!codexCmdText.includes("CODEX_HOME") || !codexCmdText.includes(officialCliHome)) {
+      issues.push(`codex.cmd does not pin CODEX_HOME to ${officialCliHome}.`);
     }
   }
 }
@@ -457,6 +484,7 @@ if (state && state.official_api_key_profiles && typeof state.official_api_key_pr
 }
 
 const configPath = path.join(officialHome, "config.toml");
+const officialCliConfigPath = path.join(officialCliHome, "config.toml");
 let forcedValue = null;
 if (pathExists(configPath)) {
   const configText = readText(configPath);
@@ -487,7 +515,38 @@ if (pathExists(configPath)) {
   warnings.push(`Official config not found: ${configPath}`);
 }
 
+let officialCliForcedValue = null;
+if (pathExists(officialCliConfigPath)) {
+  const configText = readText(officialCliConfigPath);
+  for (const key of ["cli_auth_credentials_store", "forced_chatgpt_workspace_id"]) {
+    const inspection = inspectManagedKey(configText, key);
+    if (inspection.topLevelLines.length > 1) {
+      issues.push(
+        `Duplicate top-level ${key} entries in official CLI config at lines ${inspection.topLevelLines.join(", ")}`,
+      );
+    }
+    if (inspection.nestedLines.length > 0) {
+      const locations = inspection.nestedLines
+        .map((item) => `${item.table} line ${item.line}`)
+        .join(", ");
+      issues.push(`Official CLI ${key} is nested instead of top-level: ${locations}`);
+    }
+  }
+
+  const authStoreValue = extractTopLevelValue(configText, "cli_auth_credentials_store");
+  if (authStoreValue === null) {
+    issues.push("Official CLI config does not define top-level cli_auth_credentials_store");
+  } else if (authStoreValue !== '"file"') {
+    issues.push(`Official CLI cli_auth_credentials_store should be "file", found ${authStoreValue}`);
+  }
+
+  officialCliForcedValue = extractTopLevelValue(configText, "forced_chatgpt_workspace_id");
+} else {
+  issues.push(`Official CLI config not found: ${officialCliConfigPath}`);
+}
+
 const officialAuthPath = path.join(officialHome, "auth.json");
+const officialCliAuthPath = path.join(officialCliHome, "auth.json");
 let officialAuthKind = null;
 let officialAuthAccountId = null;
 if (pathExists(officialAuthPath)) {
@@ -499,6 +558,21 @@ if (pathExists(officialAuthPath)) {
   } catch (error) {
     issues.push(`Invalid official auth JSON: ${officialAuthPath} (${error.message})`);
   }
+}
+
+let officialCliAuthKind = null;
+let officialCliAuthAccountId = null;
+if (pathExists(officialCliAuthPath)) {
+  try {
+    const officialCliAuth = readJson(officialCliAuthPath);
+    officialCliAuthKind = detectAuthKind(officialCliAuth);
+    officialCliAuthAccountId =
+      officialCliAuthKind === PROFILE_KIND_CHATGPT ? extractChatGptAccountId(officialCliAuth) : null;
+  } catch (error) {
+    issues.push(`Invalid official CLI auth JSON: ${officialCliAuthPath} (${error.message})`);
+  }
+} else {
+  issues.push(`Official CLI auth is missing: ${officialCliAuthPath}`);
 }
 
 if (plainCodexMode === PLAIN_CODEX_MODE_THIRD_PARTY) {
@@ -533,6 +607,28 @@ if (plainCodexMode === PLAIN_CODEX_MODE_THIRD_PARTY) {
         `forced_chatgpt_workspace_id ${forcedValue} does not match active ChatGPT tuple ${activeTuple.login_workspace_id}`,
       );
     }
+
+    if (officialCliAuthKind !== PROFILE_KIND_CHATGPT) {
+      issues.push("Active official profile is ChatGPT, but official CLI auth is not ChatGPT auth.");
+    }
+
+    if (
+      activeTuple.login_workspace_id &&
+      officialCliAuthAccountId &&
+      activeTuple.login_workspace_id !== officialCliAuthAccountId
+    ) {
+      issues.push(
+        `Official CLI auth account id ${officialCliAuthAccountId} does not match active ChatGPT tuple ${activeTuple.tuple_id}`,
+      );
+    }
+
+    if (officialCliForcedValue === null) {
+      issues.push("Official CLI config does not define top-level forced_chatgpt_workspace_id");
+    } else if (officialCliForcedValue !== `"${activeTuple.login_workspace_id}"`) {
+      issues.push(
+        `Official CLI forced_chatgpt_workspace_id ${officialCliForcedValue} does not match active ChatGPT tuple ${activeTuple.login_workspace_id}`,
+      );
+    }
   }
 } else if (state?.active_official_profile?.kind === PROFILE_KIND_OFFICIAL_API_KEY) {
   if (!pathExists(officialAuthPath)) {
@@ -546,10 +642,26 @@ if (plainCodexMode === PLAIN_CODEX_MODE_THIRD_PARTY) {
       "Active official API key profile still has forced_chatgpt_workspace_id in official config.",
     );
   }
+
+  if (officialCliAuthKind !== PROFILE_KIND_OFFICIAL_API_KEY) {
+    issues.push("Active official profile is an API key profile, but official CLI auth is not API key auth.");
+  }
+
+  if (officialCliForcedValue !== null) {
+    issues.push(
+      "Active official API key profile still has forced_chatgpt_workspace_id in official CLI config.",
+    );
+  }
 } else {
   if (forcedValue !== null && officialAuthKind !== PROFILE_KIND_CHATGPT) {
     warnings.push(
       "forced_chatgpt_workspace_id is still present in official config while no ChatGPT tuple is marked active.",
+    );
+  }
+
+  if (officialCliForcedValue !== null && officialCliAuthKind !== PROFILE_KIND_CHATGPT) {
+    warnings.push(
+      "forced_chatgpt_workspace_id is still present in official CLI config while no ChatGPT tuple is marked active.",
     );
   }
 }
@@ -561,6 +673,7 @@ const payload = {
   paths: {
     managerHome,
     officialHome,
+    officialCliHome,
     launcherDir,
   },
   plainCodexMode,

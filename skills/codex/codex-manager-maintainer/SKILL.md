@@ -30,6 +30,7 @@ description: Maintain `codex_m` as the machine-local manager for official Codex 
 - `Account Manage` operates on saved official ChatGPT snapshots only.
 - `API Key Manage` operates on saved official API key profiles only.
 - `codex.exe` means "make the Desktop lane follow the official identity managed by `codex_m`".
+- On Windows, the plain `codex` CLI should be wrapped to use `~/.codex-official`, so Desktop `codex.exe` follow-mode and CLI follow-mode stay separate.
 - Switching the official identity updates auth carriers and managed config keys; it does not mean swapping the whole Codex home.
 - Shared session/history/thread metadata should stay aligned as much as safely possible.
 - Auth carriers and managed config keys stay separate from shared session/history state.
@@ -81,5 +82,6 @@ description: Maintain `codex_m` as the machine-local manager for official Codex 
 - Do not delete shared sessions/history/trust/skills during normal logout, repair, or switching.
 - Do not describe `codex.exe` follow-mode as launcher replacement or whole-home replacement.
 - Do not overwrite unrelated config keys; patch only the managed top-level keys.
+- Do not claim Desktop-only follow-mode on Windows unless the managed plain `codex` launcher is pinned to `~/.codex-official`.
 - Do not present the current Windows directory layout as a cross-platform contract.
 - If upstream Codex behavior changes, update the platform adapter and validation logic before changing the public contract.

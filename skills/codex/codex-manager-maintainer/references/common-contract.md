@@ -9,6 +9,7 @@
 - `Account Manage` is only for official ChatGPT snapshots.
 - `API Key Manage` is only for official API key profiles.
 - `codex.exe` means "make the Desktop lane follow the official identity currently managed by `codex_m`".
+- On Windows, the plain `codex` CLI is expected to use a separate official CLI home such as `~/.codex-official`, so Desktop follow-mode does not imply CLI switching.
 - `Enter` applies the selected identity in the current section.
 - `Tab` opens section-specific actions such as `Rename`, `Logout`, or `Delete`.
 

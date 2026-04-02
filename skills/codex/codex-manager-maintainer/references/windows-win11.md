@@ -7,7 +7,7 @@ Load this file only when the target platform is Windows or when porting the Wind
 - Current manager home: `%USERPROFILE%\.codex-manager`
 - Current Desktop home: `%USERPROFILE%\.codex`
 - Current official CLI home used by the wrapper: `%USERPROFILE%\.codex-official`
-- Current launchers: `%APPDATA%\npm\codex_m.ps1` and `%APPDATA%\npm\codex_m.cmd`
+- Current launchers: `%APPDATA%\npm\codex_m.ps1`, `%APPDATA%\npm\codex_m.cmd`, `%APPDATA%\npm\codex.ps1`, and `%APPDATA%\npm\codex.cmd`
 
 These paths are the current Windows implementation, not the cross-platform contract.
 
@@ -46,6 +46,7 @@ codex_m doctor
 Expected:
 
 - `codex_m` launcher exists.
+- plain `codex` launcher is wrapped to pin `CODEX_HOME` to `%USERPROFILE%\.codex-official`.
 - runtime files exist under manager home.
 - managed config keys remain top-level.
 - Home shows official ChatGPT and official API key management.
@@ -58,3 +59,4 @@ Expected:
 - Patch only managed config keys.
 - Do not hard-link or junction live SQLite `state_5.sqlite*` files between homes.
 - Do not present `.codex-official` as a permanent cross-platform requirement.
+- Do not claim Desktop-only follow-mode unless the plain `codex` wrapper still points at `.codex-official`.

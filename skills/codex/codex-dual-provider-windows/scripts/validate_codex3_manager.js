@@ -209,6 +209,7 @@ const jsonMode = process.argv.includes("--json");
 const managerHome = process.env.CODEX3_MANAGER_HOME
   ? path.resolve(process.env.CODEX3_MANAGER_HOME)
   : path.join(os.homedir(), ".codex3-manager");
+const officialCliHome = path.join(os.homedir(), ".codex-official");
 const launcherDir =
   process.platform === "win32"
     ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
@@ -238,6 +239,31 @@ for (const launcherFile of [
 ]) {
   if (!pathExists(launcherFile)) {
     issues.push(`Missing manager launcher: ${launcherFile}`);
+  }
+}
+
+if (process.platform === "win32") {
+  const codexPs1Path = path.join(launcherDir, "codex.ps1");
+  const codexCmdPath = path.join(launcherDir, "codex.cmd");
+
+  for (const launcherFile of [codexPs1Path, codexCmdPath]) {
+    if (!pathExists(launcherFile)) {
+      issues.push(`Missing managed plain codex launcher: ${launcherFile}`);
+    }
+  }
+
+  if (pathExists(codexPs1Path)) {
+    const codexPs1Text = readText(codexPs1Path);
+    if (!codexPs1Text.includes("CODEX_HOME") || !codexPs1Text.includes(officialCliHome)) {
+      issues.push(`codex.ps1 does not pin CODEX_HOME to ${officialCliHome}.`);
+    }
+  }
+
+  if (pathExists(codexCmdPath)) {
+    const codexCmdText = readText(codexCmdPath);
+    if (!codexCmdText.includes("CODEX_HOME") || !codexCmdText.includes(officialCliHome)) {
+      issues.push(`codex.cmd does not pin CODEX_HOME to ${officialCliHome}.`);
+    }
   }
 }
 
@@ -474,7 +500,7 @@ if (process.platform === "win32") {
 
 if (plainCodexMode === "third_party") {
   warnings.push(
-    "Desktop is currently following the third-party lane. That bridge is separate from codex3's own isolated auth/config path.",
+    `Desktop is currently following the third-party lane. The plain codex CLI should still stay on ${officialCliHome} via the managed codex launcher.`,
   );
 }
 
@@ -485,6 +511,7 @@ const payload = {
   paths: {
     managerHome,
     launcherDir,
+    officialCliHome,
     thirdPartyHome: provider.third_party_home,
     sharedCodexHome: provider.shared_codex_home,
   },

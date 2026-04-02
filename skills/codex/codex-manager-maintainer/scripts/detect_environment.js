@@ -16,6 +16,10 @@ function resolveOfficialHome() {
   return path.join(os.homedir(), ".codex");
 }
 
+function resolveOfficialCliHome() {
+  return path.join(os.homedir(), ".codex-official");
+}
+
 function resolveEffectiveCodexHome() {
   if (process.env.CODEX_HOME && path.isAbsolute(process.env.CODEX_HOME)) {
     return process.env.CODEX_HOME;
@@ -74,6 +78,7 @@ function pathExists(filePath) {
 const homeDir = os.homedir();
 const managerHome = resolveManagerHome();
 const officialHome = resolveOfficialHome();
+const officialCliHome = resolveOfficialCliHome();
 const effectiveCodexHome = resolveEffectiveCodexHome();
 const launcherDir =
   process.platform === "win32"
@@ -83,6 +88,8 @@ const launcherDir =
 const launcherPaths =
   process.platform === "win32"
     ? {
+        codexPs1: path.join(launcherDir, "codex.ps1"),
+        codexCmd: path.join(launcherDir, "codex.cmd"),
         ps1: path.join(launcherDir, "codex_m.ps1"),
         cmd: path.join(launcherDir, "codex_m.cmd"),
       }
@@ -105,9 +112,12 @@ const report = {
   paths: {
     homeDir,
     officialHome,
+    officialCliHome,
     effectiveCodexHome,
     officialAuthPath: path.join(officialHome, "auth.json"),
     officialConfigPath: path.join(officialHome, "config.toml"),
+    officialCliAuthPath: path.join(officialCliHome, "auth.json"),
+    officialCliConfigPath: path.join(officialCliHome, "config.toml"),
     managerHome,
     managerEntryPath: path.join(managerHome, "index.mjs"),
     managerStatePath: statePath,

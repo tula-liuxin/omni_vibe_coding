@@ -1269,6 +1269,37 @@ function copyThirdPartyAuthToOfficial(provider) {
   fs.copyFileSync(source, OFFICIAL_AUTH_PATH);
 }
 
+function assertPlainCodexLauncherUsesOfficialCliHome() {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  const codexPs1Path = path.join(LAUNCHER_DIR, "codex.ps1");
+  const codexCmdPath = path.join(LAUNCHER_DIR, "codex.cmd");
+
+  for (const launcherPath of [codexPs1Path, codexCmdPath]) {
+    if (!pathExists(launcherPath)) {
+      throw new Error(
+        `The managed plain codex launcher is missing: ${launcherPath}. Run the codex_m Windows installer or repair before using 'codex.exe to use'.`,
+      );
+    }
+  }
+
+  const codexPs1Text = readText(codexPs1Path);
+  const codexCmdText = readText(codexCmdPath);
+
+  if (
+    !codexPs1Text.includes("CODEX_HOME") ||
+    !codexPs1Text.includes(OFFICIAL_CLI_HOME) ||
+    !codexCmdText.includes("CODEX_HOME") ||
+    !codexCmdText.includes(OFFICIAL_CLI_HOME)
+  ) {
+    throw new Error(
+      `The plain codex launcher is not pinned to ${OFFICIAL_CLI_HOME}. Repair codex_m first so 'codex.exe to use' only affects Desktop instead of the CLI.`,
+    );
+  }
+}
+
 function resolveWrapperInstallerPath() {
   const candidates = [
     path.join(SCRIPTS_DIR, "install_codex3_wrapper.ps1"),
@@ -1446,13 +1477,15 @@ async function setPlainCodexThirdPartyMode(
   const activeProfileId = state.active_profile_id;
   if (!activeProfileId) {
     throw new Error(
-      `No active third-party profile is selected. Use Manage first so ${MANAGER_COMMAND_NAME} knows which profile plain codex should follow.`,
+      `No active third-party profile is selected. Use Manage first so ${MANAGER_COMMAND_NAME} knows which profile Desktop codex.exe should follow.`,
     );
   }
 
   if (!skipProcessCheck) {
     assertNoRunningCodexProcesses();
   }
+
+  assertPlainCodexLauncherUsesOfficialCliHome();
 
   await activateProfile(state, activeProfileId, { silent: true, skipProcessCheck: true });
   capturePlainCodexOfficialBackupsIfNeeded();

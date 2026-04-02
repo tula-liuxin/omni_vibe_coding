@@ -30,6 +30,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - `codex3` stays on the third-party lane.
 - `codex3_m` manages saved third-party API key profiles.
 - `codex.exe to use` means "choose whether Desktop `codex.exe` should follow the active third-party lane".
+- On Windows, that Desktop-only contract assumes the managed plain `codex` launcher is pinned to `~/.codex-official`.
 - Third-party auth/config remain isolated from the official lane.
 - Default shared state is limited to:
   - `sessions`
@@ -81,6 +82,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - Do not store third-party auth inside the official home.
 - Do not let `codex3_m` rewrite official manager state except for the explicit `codex.exe to use` bridge.
 - Do not describe `codex.exe to use` as launcher replacement, plain `codex` CLI switching, or whole-home replacement.
+- Do not allow `codex.exe to use` to run on Windows if the managed plain `codex` launcher is not pinned to `~/.codex-official`.
 - Do not expand third-party default sharing beyond `sessions`, `archived_sessions`, and `session_index.jsonl` unless the task explicitly requires it and safety is clear.
 - Do not live-share SQLite `state_5.sqlite*` files between official and third-party homes.
 - Do not silently ignore user-supplied provider tutorial values when advanced provider compatibility is the task.
