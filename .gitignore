@@ -1,0 +1,2 @@
+local_backups/*
+!local_backups/README.md

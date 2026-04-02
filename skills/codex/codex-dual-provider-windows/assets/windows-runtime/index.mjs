@@ -41,7 +41,40 @@ function installPromptCloseGuards() {
 installPromptCloseGuards();
 
 const VERSION = 1;
-const MANAGER_HOME = path.join(os.homedir(), ".codex3-manager");
+const PROVIDER_MODE_COMPAT = "compat";
+const PROVIDER_MODE_STABLE_HTTP = "stable_http";
+const PROVIDER_MODE_API111 = "api111";
+const DEFAULT_STABLE_HTTP_PROVIDER_ID = "sub2api";
+const DEFAULT_API111_PROVIDER_ID = "api111";
+
+function resolveManagerHome() {
+  const envHome = process.env.CODEX_THIRD_PARTY_MANAGER_HOME;
+  if (envHome && String(envHome).trim()) {
+    return path.resolve(String(envHome).trim());
+  }
+  return path.join(os.homedir(), ".codex3-manager");
+}
+
+function resolveManagerCommandName() {
+  const envCommand = process.env.CODEX_THIRD_PARTY_MANAGER_COMMAND;
+  if (envCommand && String(envCommand).trim()) {
+    return String(envCommand).trim();
+  }
+  return "codex3_m";
+}
+
+function resolveLauncherDir() {
+  const envDir = process.env.CODEX_THIRD_PARTY_LAUNCHER_DIR;
+  if (envDir && String(envDir).trim()) {
+    return path.resolve(String(envDir).trim());
+  }
+  return process.platform === "win32"
+    ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
+    : path.join(os.homedir(), ".local", "bin");
+}
+
+const MANAGER_HOME = resolveManagerHome();
+const MANAGER_COMMAND_NAME = resolveManagerCommandName();
 const STATE_PATH = path.join(MANAGER_HOME, "state.json");
 const PROFILES_DIR = path.join(MANAGER_HOME, "profiles");
 const BACKUPS_DIR = path.join(MANAGER_HOME, "backups");
@@ -54,18 +87,12 @@ const PLAIN_CODEX_BACKUP_CONFIG_PATH = path.join(
   PLAIN_CODEX_BRIDGE_DIR,
   "official-config.toml",
 );
-const LAUNCHER_DIR =
-  process.platform === "win32"
-    ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
-    : path.join(os.homedir(), ".local", "bin");
+const LAUNCHER_DIR = resolveLauncherDir();
 
 const DEFAULT_THIRD_PARTY_HOME = path.join(os.homedir(), ".codex-apikey");
 const DEFAULT_SHARED_CODEX_HOME = path.join(os.homedir(), ".codex");
 const SHARED_SESSION_RELATIVE_PATHS = ["sessions", "archived_sessions"];
 const SHARED_SESSION_INDEX_FILE = "session_index.jsonl";
-const PROVIDER_MODE_COMPAT = "compat";
-const PROVIDER_MODE_STABLE_HTTP = "stable_http";
-const DEFAULT_STABLE_HTTP_PROVIDER_ID = "sub2api";
 const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
 const OFFICIAL_CLI_HOME = path.join(os.homedir(), ".codex-official");
 const OFFICIAL_AUTH_PATH = path.join(OFFICIAL_HOME, "auth.json");
@@ -80,6 +107,9 @@ const DEFAULT_PROVIDER = {
   model: "gpt-5.4",
   review_model: "gpt-5.4",
   model_reasoning_effort: "xhigh",
+  preferred_auth_method: null,
+  requires_openai_auth: null,
+  supports_websockets: null,
   model_context_window: 1000000,
   model_auto_compact_token_limit: 900000,
 };
@@ -721,13 +751,91 @@ function backupFileIfExists(filePath, label) {
 
 function normalizeProviderMode(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
-  return normalized === PROVIDER_MODE_STABLE_HTTP
-    ? PROVIDER_MODE_STABLE_HTTP
-    : PROVIDER_MODE_COMPAT;
+  if (normalized === PROVIDER_MODE_STABLE_HTTP) {
+    return PROVIDER_MODE_STABLE_HTTP;
+  }
+  if (normalized === PROVIDER_MODE_API111) {
+    return PROVIDER_MODE_API111;
+  }
+  return PROVIDER_MODE_COMPAT;
 }
 
 function providerModeCliLabel(mode) {
-  return normalizeProviderMode(mode) === PROVIDER_MODE_STABLE_HTTP ? "stable-http" : "compat";
+  const normalized = normalizeProviderMode(mode);
+  if (normalized === PROVIDER_MODE_STABLE_HTTP) {
+    return "stable-http";
+  }
+  if (normalized === PROVIDER_MODE_API111) {
+    return "api111";
+  }
+  return "compat";
+}
+
+function getModeDefaults(mode) {
+  switch (normalizeProviderMode(mode)) {
+    case PROVIDER_MODE_STABLE_HTTP:
+      return {
+        provider_name: DEFAULT_STABLE_HTTP_PROVIDER_ID,
+        base_url: "https://sub.aimizy.com",
+        model: "gpt-5.4",
+        review_model: "gpt-5.4",
+        model_reasoning_effort: "xhigh",
+        preferred_auth_method: null,
+        requires_openai_auth: true,
+        supports_websockets: false,
+      };
+    case PROVIDER_MODE_API111:
+      return {
+        provider_name: DEFAULT_API111_PROVIDER_ID,
+        base_url: "https://api.xcode.best/v1",
+        model: "gpt-5-codex",
+        review_model: null,
+        model_reasoning_effort: "high",
+        preferred_auth_method: "apikey",
+        requires_openai_auth: null,
+        supports_websockets: null,
+      };
+    default:
+      return {
+        provider_name: "openai",
+        base_url: "https://sub.aimizy.com",
+        model: "gpt-5.4",
+        review_model: "gpt-5.4",
+        model_reasoning_effort: "xhigh",
+        preferred_auth_method: null,
+        requires_openai_auth: null,
+        supports_websockets: null,
+      };
+  }
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+function normalizeOptionalString(value) {
+  if (value == null) {
+    return null;
+  }
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
+function normalizeOptionalBoolean(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  return null;
 }
 
 function usesBuiltInOpenAiProvider(provider) {
@@ -744,6 +852,7 @@ function effectiveOpenAiBaseUrl(provider) {
 
 function normalizeProvider(provider = {}) {
   const mode = normalizeProviderMode(provider.mode || DEFAULT_PROVIDER.mode);
+  const modeDefaults = getModeDefaults(mode);
   const commandName =
     String(provider.command_name || DEFAULT_PROVIDER.command_name).trim() ||
     DEFAULT_PROVIDER.command_name;
@@ -759,19 +868,30 @@ function normalizeProvider(provider = {}) {
     shared_codex_home: sharedCodexHome,
     mode,
     provider_name:
-      mode === PROVIDER_MODE_COMPAT ? "openai" : DEFAULT_STABLE_HTTP_PROVIDER_ID,
+      normalizeOptionalString(provider.provider_name) || modeDefaults.provider_name,
     base_url:
-      String(provider.base_url || DEFAULT_PROVIDER.base_url).trim().replace(/\/+$/, "") ||
-      DEFAULT_PROVIDER.base_url,
+      (normalizeOptionalString(provider.base_url) || modeDefaults.base_url).replace(/\/+$/, ""),
     model:
-      String(provider.model || DEFAULT_PROVIDER.model).trim() || DEFAULT_PROVIDER.model,
+      normalizeOptionalString(provider.model) || modeDefaults.model,
     review_model:
-      String(provider.review_model || provider.model || DEFAULT_PROVIDER.review_model).trim() ||
-      DEFAULT_PROVIDER.review_model,
+      hasOwn(provider, "review_model")
+        ? normalizeOptionalString(provider.review_model)
+        : modeDefaults.review_model,
     model_reasoning_effort:
-      String(
-        provider.model_reasoning_effort || DEFAULT_PROVIDER.model_reasoning_effort,
-      ).trim() || DEFAULT_PROVIDER.model_reasoning_effort,
+      normalizeOptionalString(provider.model_reasoning_effort) ||
+      modeDefaults.model_reasoning_effort,
+    preferred_auth_method:
+      hasOwn(provider, "preferred_auth_method")
+        ? normalizeOptionalString(provider.preferred_auth_method)
+        : modeDefaults.preferred_auth_method,
+    requires_openai_auth:
+      hasOwn(provider, "requires_openai_auth")
+        ? normalizeOptionalBoolean(provider.requires_openai_auth)
+        : modeDefaults.requires_openai_auth,
+    supports_websockets:
+      hasOwn(provider, "supports_websockets")
+        ? normalizeOptionalBoolean(provider.supports_websockets)
+        : modeDefaults.supports_websockets,
     model_context_window:
       Number.isFinite(Number(provider.model_context_window))
         ? Number(provider.model_context_window)
@@ -1020,47 +1140,47 @@ function saveProfileAuth(profileId, authData) {
 }
 
 function writeThirdPartyConfig(provider) {
-  const text = usesBuiltInOpenAiProvider(provider)
-    ? [
-        'cli_auth_credentials_store = "file"',
-        'model_provider = "openai"',
-        `openai_base_url = "${effectiveOpenAiBaseUrl(provider)}"`,
-        `model = "${provider.model}"`,
-        `review_model = "${provider.review_model}"`,
-        `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
-        'disable_response_storage = true',
-        'network_access = "enabled"',
-        'windows_wsl_setup_acknowledged = true',
-        `model_context_window = ${provider.model_context_window}`,
-        `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
-        "",
-        "[features]",
-        "apps = false",
-        "",
-      ].join("\n")
-    : [
-        'cli_auth_credentials_store = "file"',
-        `model_provider = "${provider.provider_name}"`,
-        `model = "${provider.model}"`,
-        `review_model = "${provider.review_model}"`,
-        `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
-        'disable_response_storage = true',
-        'network_access = "enabled"',
-        'windows_wsl_setup_acknowledged = true',
-        `model_context_window = ${provider.model_context_window}`,
-        `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
-        "",
-        `[model_providers.${provider.provider_name}]`,
-        `name = "${provider.provider_name}"`,
-        `base_url = "${provider.base_url}"`,
-        'wire_api = "responses"',
-        'requires_openai_auth = true',
-        'supports_websockets = false',
-        "",
-        "[features]",
-        "apps = false",
-        "",
-      ].join("\n");
+  const lines = ['cli_auth_credentials_store = "file"'];
+
+  if (usesBuiltInOpenAiProvider(provider)) {
+    lines.push(
+      'model_provider = "openai"',
+      `openai_base_url = "${effectiveOpenAiBaseUrl(provider)}"`,
+    );
+  } else {
+    lines.push(`model_provider = "${provider.provider_name}"`);
+  }
+
+  lines.push(`model = "${provider.model}"`);
+  if (provider.review_model) {
+    lines.push(`review_model = "${provider.review_model}"`);
+  }
+  lines.push(`model_reasoning_effort = "${provider.model_reasoning_effort}"`);
+  lines.push("disable_response_storage = true");
+  if (provider.preferred_auth_method) {
+    lines.push(`preferred_auth_method = "${provider.preferred_auth_method}"`);
+  }
+  lines.push('network_access = "enabled"');
+  lines.push("windows_wsl_setup_acknowledged = true");
+  lines.push(`model_context_window = ${provider.model_context_window}`);
+  lines.push(`model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`);
+
+  if (!usesBuiltInOpenAiProvider(provider)) {
+    lines.push("");
+    lines.push(`[model_providers.${provider.provider_name}]`);
+    lines.push(`name = "${provider.provider_name}"`);
+    lines.push(`base_url = "${provider.base_url}"`);
+    lines.push('wire_api = "responses"');
+    if (provider.requires_openai_auth != null) {
+      lines.push(`requires_openai_auth = ${provider.requires_openai_auth ? "true" : "false"}`);
+    }
+    if (provider.supports_websockets != null) {
+      lines.push(`supports_websockets = ${provider.supports_websockets ? "true" : "false"}`);
+    }
+  }
+
+  lines.push("", "[features]", "apps = false", "");
+  const text = lines.join("\n");
 
   ensureDir(provider.third_party_home);
   backupFileIfExists(thirdPartyConfigPath(provider), "codex3-config.toml.bak");
@@ -1072,7 +1192,6 @@ function buildPlainCodexThirdPartyTopLevelEntries(provider) {
     cli_auth_credentials_store: '"file"',
     model_provider: JSON.stringify(provider.provider_name),
     model: JSON.stringify(provider.model),
-    review_model: JSON.stringify(provider.review_model),
     model_reasoning_effort: JSON.stringify(provider.model_reasoning_effort),
     disable_response_storage: "true",
     network_access: '"enabled"',
@@ -1080,6 +1199,12 @@ function buildPlainCodexThirdPartyTopLevelEntries(provider) {
     model_context_window: String(provider.model_context_window),
     model_auto_compact_token_limit: String(provider.model_auto_compact_token_limit),
   };
+  if (provider.review_model) {
+    entries.review_model = JSON.stringify(provider.review_model);
+  }
+  if (provider.preferred_auth_method) {
+    entries.preferred_auth_method = JSON.stringify(provider.preferred_auth_method);
+  }
   if (usesBuiltInOpenAiProvider(provider)) {
     entries.openai_base_url = JSON.stringify(effectiveOpenAiBaseUrl(provider));
   }
@@ -1090,13 +1215,18 @@ function buildPlainCodexThirdPartyProviderTableEntries(provider) {
   if (usesBuiltInOpenAiProvider(provider)) {
     return null;
   }
-  return {
+  const entries = {
     name: JSON.stringify(provider.provider_name),
     base_url: JSON.stringify(provider.base_url),
     wire_api: JSON.stringify("responses"),
-    requires_openai_auth: "true",
-    supports_websockets: "false",
   };
+  if (provider.requires_openai_auth != null) {
+    entries.requires_openai_auth = provider.requires_openai_auth ? "true" : "false";
+  }
+  if (provider.supports_websockets != null) {
+    entries.supports_websockets = provider.supports_websockets ? "true" : "false";
+  }
+  return entries;
 }
 
 function applyPlainCodexThirdPartyBridge(provider) {
@@ -1112,6 +1242,7 @@ function applyPlainCodexThirdPartyBridge(provider) {
   for (const tableName of [
     "model_providers.OpenAI",
     `model_providers.${DEFAULT_STABLE_HTTP_PROVIDER_ID}`,
+    `model_providers.${DEFAULT_API111_PROVIDER_ID}`,
   ]) {
     if (!providerTableEntries || tableName !== `model_providers.${provider.provider_name}`) {
       configText = removeTomlTable(configText, tableName, commentLabel);
@@ -1165,6 +1296,8 @@ function runWrapperInstaller(provider) {
     installer,
     "-CommandName",
     provider.command_name,
+    "-GlobalBinDir",
+    LAUNCHER_DIR,
     "-ThirdPartyHome",
     provider.third_party_home,
     "-SharedCodexHome",
@@ -1175,8 +1308,6 @@ function runWrapperInstaller(provider) {
     provider.base_url,
     "-Model",
     provider.model,
-    "-ReviewModel",
-    provider.review_model,
     "-ModelReasoningEffort",
     provider.model_reasoning_effort,
     "-ModelContextWindow",
@@ -1184,6 +1315,19 @@ function runWrapperInstaller(provider) {
     "-ModelAutoCompactTokenLimit",
     String(provider.model_auto_compact_token_limit),
   ];
+
+  if (provider.review_model) {
+    args.push("-ReviewModel", provider.review_model);
+  }
+  if (provider.preferred_auth_method) {
+    args.push("-PreferredAuthMethod", provider.preferred_auth_method);
+  }
+  if (provider.requires_openai_auth != null) {
+    args.push("-RequiresOpenAiAuth", String(provider.requires_openai_auth));
+  }
+  if (provider.supports_websockets != null) {
+    args.push("-SupportsWebsockets", String(provider.supports_websockets));
+  }
 
   const result = spawnSync("powershell", args, {
     encoding: "utf8",
@@ -1302,7 +1446,7 @@ async function setPlainCodexThirdPartyMode(
   const activeProfileId = state.active_profile_id;
   if (!activeProfileId) {
     throw new Error(
-      "No active third-party profile is selected. Use Manage first so codex3_m knows which profile codex.exe should follow.",
+      `No active third-party profile is selected. Use Manage first so ${MANAGER_COMMAND_NAME} knows which profile plain codex should follow.`,
     );
   }
 
@@ -1316,7 +1460,7 @@ async function setPlainCodexThirdPartyMode(
   applyPlainCodexThirdPartyBridge(provider);
 
   setPlainCodexModeState(PLAIN_CODEX_MODE_THIRD_PARTY, {
-    source: "codex3_m",
+    source: MANAGER_COMMAND_NAME,
     provider_name: provider.provider_name,
     provider_base_url: provider.base_url,
     active_profile_id: activeProfileId,
@@ -1325,7 +1469,7 @@ async function setPlainCodexThirdPartyMode(
   if (!silent) {
     const profile = requireProfile(state, activeProfileId);
     console.log(
-      `codex.exe now makes Desktop follow the third-party lane managed by codex3_m: ${profile.alias} | ${readSavedProfileMaskedKey(profile.profile_id)}`,
+      `Plain codex now follows ${provider.command_name} using third-party profile: ${profile.alias} | ${readSavedProfileMaskedKey(profile.profile_id)}`,
     );
     if (skipProcessCheck) {
       console.log(
@@ -1387,8 +1531,8 @@ function doctorReport(state) {
   const wrapperCmdPath = path.join(LAUNCHER_DIR, `${provider.command_name}.cmd`);
 
   for (const filePath of [
-    path.join(LAUNCHER_DIR, "codex3_m.ps1"),
-    path.join(LAUNCHER_DIR, "codex3_m.cmd"),
+    path.join(LAUNCHER_DIR, `${MANAGER_COMMAND_NAME}.ps1`),
+    path.join(LAUNCHER_DIR, `${MANAGER_COMMAND_NAME}.cmd`),
   ]) {
     if (!fs.existsSync(filePath)) {
       issues.push(`Missing manager launcher: ${filePath}`);
@@ -1484,29 +1628,40 @@ function doctorReport(state) {
     issues.push(`Third-party config is missing: ${configPath}`);
   } else {
     const configText = readText(configPath);
-    const requiredSnippets = usesBuiltInOpenAiProvider(provider)
-      ? [
-          'cli_auth_credentials_store = "file"',
-          'model_provider = "openai"',
-          `openai_base_url = "${effectiveOpenAiBaseUrl(provider)}"`,
-          `model = "${provider.model}"`,
-          `review_model = "${provider.review_model}"`,
-          `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
-          `model_context_window = ${provider.model_context_window}`,
-          `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
-        ]
-      : [
-          'cli_auth_credentials_store = "file"',
-          `model_provider = "${provider.provider_name}"`,
-          `model = "${provider.model}"`,
-          `review_model = "${provider.review_model}"`,
-          `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
-          `model_context_window = ${provider.model_context_window}`,
-          `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
-          `base_url = "${provider.base_url}"`,
-          "requires_openai_auth = true",
-          "supports_websockets = false",
-        ];
+    const requiredSnippets = ['cli_auth_credentials_store = "file"'];
+    if (usesBuiltInOpenAiProvider(provider)) {
+      requiredSnippets.push(
+        'model_provider = "openai"',
+        `openai_base_url = "${effectiveOpenAiBaseUrl(provider)}"`,
+      );
+    } else {
+      requiredSnippets.push(
+        `model_provider = "${provider.provider_name}"`,
+        `base_url = "${provider.base_url}"`,
+      );
+    }
+    requiredSnippets.push(
+      `model = "${provider.model}"`,
+      `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
+      `model_context_window = ${provider.model_context_window}`,
+      `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
+    );
+    if (provider.review_model) {
+      requiredSnippets.push(`review_model = "${provider.review_model}"`);
+    }
+    if (provider.preferred_auth_method) {
+      requiredSnippets.push(`preferred_auth_method = "${provider.preferred_auth_method}"`);
+    }
+    if (!usesBuiltInOpenAiProvider(provider) && provider.requires_openai_auth != null) {
+      requiredSnippets.push(
+        `requires_openai_auth = ${provider.requires_openai_auth ? "true" : "false"}`,
+      );
+    }
+    if (!usesBuiltInOpenAiProvider(provider) && provider.supports_websockets != null) {
+      requiredSnippets.push(
+        `supports_websockets = ${provider.supports_websockets ? "true" : "false"}`,
+      );
+    }
     for (const snippet of requiredSnippets) {
       if (!configText.includes(snippet)) {
         issues.push(`Third-party config is missing expected setting: ${snippet}`);
@@ -1577,11 +1732,11 @@ function getSummaryLines(state) {
   const provider = normalizeProvider(state.provider);
   const activeProfile = state.active_profile_id ? state.profiles[state.active_profile_id] : null;
   return [
-    "codex3_m",
+    MANAGER_COMMAND_NAME,
     `Command: ${provider.command_name}`,
     `Mode: ${providerModeCliLabel(provider.mode)}`,
     `Provider: ${provider.provider_name} | ${provider.base_url}`,
-    `Model: ${provider.model} | review ${provider.review_model}`,
+    `Model: ${provider.model} | review ${provider.review_model || "(none)"}`,
     `Active profile: ${activeProfile ? `${activeProfile.alias} | ${readSavedProfileMaskedKey(activeProfile.profile_id)}` : "(none)"}`,
     `Saved third-party API key profiles: ${getProfiles(state).length}`,
   ];
@@ -1787,7 +1942,7 @@ async function promptApiKeyValue(providedValue = null) {
 async function maybeActivateProfile(state, profileId, options = {}) {
   const shouldActivate =
     options.activateNow == null
-      ? await promptYesNo("Activate this third-party profile for codex3 now?", true)
+      ? await promptYesNo(`Activate this third-party profile for ${normalizeProvider(state.provider).command_name} now?`, true)
       : options.activateNow;
 
   if (!shouldActivate) {
@@ -1822,7 +1977,7 @@ async function interactiveResolveForce(actionLabel) {
 
 async function interactiveMaybeActivateProfile(state, profileId) {
   const shouldActivate = await promptConfirmPrompt(
-    "Use this third-party API key profile for codex3 now?",
+    `Use this third-party API key profile for ${normalizeProvider(state.provider).command_name} now?`,
     true,
   );
   if (!shouldActivate) {
@@ -1930,15 +2085,15 @@ function printProfileSummary(state) {
 function printOverview(state) {
   const provider = normalizeProvider(state.provider);
   const plainCodexMode = getPlainCodexMode();
-  console.log("codex3_m");
+  console.log(MANAGER_COMMAND_NAME);
   console.log("");
   console.log(`Command: ${provider.command_name}`);
   console.log(`Third-party home: ${provider.third_party_home}`);
   console.log(`Shared Codex home: ${provider.shared_codex_home}`);
   console.log(`Provider: ${provider.provider_name} | ${provider.base_url}`);
-  console.log(`Model: ${provider.model} | review ${provider.review_model}`);
-  console.log(`Desktop follow mode: ${plainCodexMode}`);
-  console.log(`Saved third-party API key profiles: ${getProfiles(state).length}`);
+  console.log(`Model: ${provider.model} | review ${provider.review_model || "(none)"}`);
+  console.log(`Plain codex mode: ${plainCodexMode}`);
+  console.log(`Saved profiles: ${getProfiles(state).length}`);
   console.log(
     `Active profile: ${state.active_profile_id ? `${requireProfile(state, state.active_profile_id).alias} | ${readSavedProfileMaskedKey(state.active_profile_id)}` : "(none)"}`,
   );
@@ -1946,17 +2101,18 @@ function printOverview(state) {
   printProfileSummary(state);
   console.log("");
   console.log("Commands:");
-  console.log("  codex3_m login");
-  console.log("  codex3_m list");
-  console.log("  codex3_m activate <profile-id> [--force]");
-  console.log("  codex3_m rename <profile-id> --alias <manual-name>");
-  console.log("  codex3_m delete <profile-id> [--force]");
-  console.log("  codex3_m use-codex3 [--force]");
-  console.log("  codex3_m mode show");
-  console.log("  codex3_m mode set <compat|stable-http>");
-  console.log("  codex3_m provider show");
-  console.log("  codex3_m provider set");
-  console.log("  codex3_m doctor");
+  console.log(`  ${MANAGER_COMMAND_NAME} login`);
+  console.log(`  ${MANAGER_COMMAND_NAME} list`);
+  console.log(`  ${MANAGER_COMMAND_NAME} activate <profile-id> [--force]`);
+  console.log(`  ${MANAGER_COMMAND_NAME} rename <profile-id> --alias <manual-name>`);
+  console.log(`  ${MANAGER_COMMAND_NAME} delete <profile-id> [--force]`);
+  console.log(`  ${MANAGER_COMMAND_NAME} use-codex3 [--force]`);
+  console.log(`  ${MANAGER_COMMAND_NAME} sync-threads [--all] [--force]`);
+  console.log(`  ${MANAGER_COMMAND_NAME} mode show`);
+  console.log(`  ${MANAGER_COMMAND_NAME} mode set <compat|stable-http|api111>`);
+  console.log(`  ${MANAGER_COMMAND_NAME} provider show`);
+  console.log(`  ${MANAGER_COMMAND_NAME} provider set`);
+  console.log(`  ${MANAGER_COMMAND_NAME} doctor`);
 }
 
 function buildManageChoices(state) {
@@ -2078,8 +2234,8 @@ async function runProviderPage() {
     const state = loadState();
     const provider = normalizeProvider(state.provider);
     const choice = await selectChoice({
-      title: "Advanced Provider",
-      description: "Inspect or update advanced provider compatibility settings for codex3. Saved API key profiles remain the primary identity model.",
+      title: "Provider (Advanced)",
+      description: `Inspect or update the third-party provider settings and shared session home used by ${provider.command_name}. Saved API key profiles remain the primary identity model.`,
       state,
       choices: [
         {
@@ -2093,7 +2249,9 @@ async function runProviderPage() {
           hint:
             providerModeCliLabel(provider.mode) === "compat"
               ? "compat | better recent-session visibility"
-              : "stable-http | disable websocket path",
+              : providerModeCliLabel(provider.mode) === "stable-http"
+                ? "stable-http | disable websocket path"
+                : "api111 | tutorial-matched custom provider",
         },
         {
           name: "set",
@@ -2102,7 +2260,7 @@ async function runProviderPage() {
         },
         {
           name: "reinstall",
-          message: "Reinstall codex3 wrapper",
+          message: `Reinstall ${provider.command_name} wrapper`,
           hint: provider.command_name,
         },
         {
@@ -2129,7 +2287,8 @@ async function runProviderPage() {
           { name: "provider", message: `Provider: ${provider.provider_name}`, hint: "derived from mode" },
           { name: "url", message: `Base URL: ${provider.base_url}`, hint: "OpenAI-compatible endpoint" },
           { name: "model", message: `Model: ${provider.model}`, hint: "default model" },
-          { name: "review_model", message: `Review model: ${provider.review_model}`, hint: "tutorial review_model" },
+          { name: "review_model", message: `Review model: ${provider.review_model || "(none)"}`, hint: "tutorial review_model" },
+          { name: "auth_method", message: `Preferred auth method: ${provider.preferred_auth_method || "(none)"}`, hint: "tutorial preferred_auth_method" },
           { name: "effort", message: `Reasoning effort: ${provider.model_reasoning_effort}`, hint: "tutorial model_reasoning_effort" },
           { name: "window", message: `Context window: ${provider.model_context_window}`, hint: "tutorial model_context_window" },
           { name: "compact", message: `Auto compact limit: ${provider.model_auto_compact_token_limit}`, hint: "tutorial model_auto_compact_token_limit" },
@@ -2143,7 +2302,7 @@ async function runProviderPage() {
       const modeChoice = await selectChoice({
         title: "Provider Mode",
         description:
-          "Compat uses provider id 'openai' for better session visibility. Stable HTTP uses a custom provider id with websockets disabled. Both remain advanced compatibility choices.",
+          "Choose the provider shape written into the third-party config and wrapper overrides. Compat aligns with openai for visibility, stable-http disables websocket routing, and api111 matches the newer tutorial.",
         state,
         choices: [
           {
@@ -2155,6 +2314,11 @@ async function runProviderPage() {
             name: PROVIDER_MODE_STABLE_HTTP,
             message: "stable-http",
             hint: "better speed and stability on some third-party gateways, but session lists split by provider id",
+          },
+          {
+            name: PROVIDER_MODE_API111,
+            message: "api111",
+            hint: "matches the newer tutorial shape with provider id api111 and preferred_auth_method=apikey",
           },
           {
             name: "back",
@@ -2190,7 +2354,7 @@ async function runProviderPage() {
     const baseUrl = (await promptInputPrompt("Base URL:", provider.base_url)) || provider.base_url;
     const model = (await promptInputPrompt("Model:", provider.model)) || provider.model;
     const reviewModel =
-      (await promptInputPrompt("Review model:", provider.review_model)) || provider.review_model;
+      (await promptInputPrompt("Review model:", provider.review_model || "")) || provider.review_model;
     const reasoningEffort =
       (await promptInputPrompt("Model reasoning effort:", provider.model_reasoning_effort)) ||
       provider.model_reasoning_effort;
@@ -2241,7 +2405,7 @@ async function runLoginPage() {
         {
           name: "add",
           message: "Add third-party API key now",
-          hint: "prompts for API key and saves it under ~/.codex3-manager",
+          hint: `prompts for API key and saves it under ${MANAGER_HOME}`,
         },
         {
           name: "import_current",
@@ -2295,12 +2459,12 @@ async function runOverviewPage() {
         {
           name: "provider",
           message: "Provider (Advanced)",
-          hint: "advanced compatibility settings for codex3",
+          hint: `edit shared wrapper/provider settings for ${normalizeProvider(state.provider).command_name}`,
         },
         {
           name: "use_codex3",
-          message: "codex.exe",
-          hint: "make Desktop follow the active third-party lane without touching the launcher path",
+          message: `Plain codex -> ${normalizeProvider(state.provider).command_name}`,
+          hint: "bridge ~/.codex to the active third-party profile without touching the launcher",
         },
         {
           name: "quit",
@@ -2336,36 +2500,38 @@ async function runOverviewPage() {
 }
 
 function printHelp() {
-  console.log(`codex3_m
+  const provider = normalizeProvider(loadState().provider);
+  console.log(`${MANAGER_COMMAND_NAME}
 
-Machine-local manager for isolated third-party API key profiles on Windows.
+Machine-local manager for isolated ${provider.command_name} auth plus shared session directories on Windows.
 
 Usage:
-  codex3_m
-  codex3_m menu
-  codex3_m login [--import-current] [--alias <manual-name>] [--activate|--no-activate] [--force]
-  codex3_m list [--json]
-  codex3_m activate <profile-id> [--force]
-  codex3_m rename <profile-id> --alias <manual-name>
-  codex3_m delete <profile-id> [--force]
-  codex3_m use-codex3 [--force]
-  codex3_m sync-threads [--all] [--force]
-  codex3_m mode show
-  codex3_m mode set <compat|stable-http>
-  codex3_m provider show [--json]
-  codex3_m provider set [--mode <compat|stable-http>] [--command-name <name>] [--third-party-home <path>] [--shared-codex-home <path>] [--base-url <url>] [--model <name>] [--review-model <name>] [--model-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]
-  codex3_m doctor
+  ${MANAGER_COMMAND_NAME}
+  ${MANAGER_COMMAND_NAME} menu
+  ${MANAGER_COMMAND_NAME} login [--import-current] [--alias <manual-name>] [--activate|--no-activate] [--force]
+  ${MANAGER_COMMAND_NAME} list [--json]
+  ${MANAGER_COMMAND_NAME} activate <profile-id> [--force]
+  ${MANAGER_COMMAND_NAME} rename <profile-id> --alias <manual-name>
+  ${MANAGER_COMMAND_NAME} delete <profile-id> [--force]
+  ${MANAGER_COMMAND_NAME} use-codex3 [--force]
+  ${MANAGER_COMMAND_NAME} sync-threads [--all] [--force]
+  ${MANAGER_COMMAND_NAME} mode show
+  ${MANAGER_COMMAND_NAME} mode set <compat|stable-http|api111>
+  ${MANAGER_COMMAND_NAME} provider show [--json]
+  ${MANAGER_COMMAND_NAME} provider set [--mode <compat|stable-http|api111>] [--command-name <name>] [--third-party-home <path>] [--shared-codex-home <path>] [--provider-name <name>] [--base-url <url>] [--model <name>] [--review-model <name>] [--preferred-auth-method <name>] [--requires-openai-auth <true|false>] [--supports-websockets <true|false>] [--model-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]
+  ${MANAGER_COMMAND_NAME} doctor
 
 Notes:
-  - Running plain 'codex3_m' opens a Home page with Login, Manage, Provider (Advanced), codex.exe, and Quit.
-  - codex3_m manages saved third-party API key profiles first; provider/mode settings are advanced compatibility tools.
-  - The codex3 CLI command always uses the isolated third-party home managed by codex3_m.
-  - The codex.exe action makes Desktop follow the active third-party lane; it does not replace the launcher or swap the whole home.
+  - Running plain '${MANAGER_COMMAND_NAME}' opens a Home page with Login, Manage, Provider (Advanced), Plain codex -> ${provider.command_name}, and Quit.
+  - ${MANAGER_COMMAND_NAME} manages saved third-party API key profiles first; provider and mode settings are advanced compatibility tools.
+  - ${provider.command_name} always uses the isolated third-party home managed by ${MANAGER_COMMAND_NAME}.
+  - Plain codex follow-mode does not replace the launcher or swap the whole home.
   - The default shared targets are sessions, archived_sessions, and session_index.jsonl.
   - compat mode keeps third-party auth outside ~/.codex and aligns provider id with the built-in openai lane for better recent-session visibility.
   - stable-http mode uses a custom provider id with supports_websockets=false for gateways that reconnect too often.
-  - The provider mirror config lives under ~/.codex-apikey/config.toml by default and records the advanced provider settings applied to codex3.
-  - Saved third-party API key profiles live under ~/.codex3-manager/profiles/.
+  - api111 mode matches the newer tutorial shape with provider id api111 and preferred_auth_method=apikey.
+  - The provider mirror config lives under ${provider.third_party_home}\\config.toml by default and records the tutorial values applied to ${provider.command_name}.
+  - Saved third-party API key profiles live under ${MANAGER_HOME}\\profiles\\.
 `);
 }
 
@@ -2418,7 +2584,7 @@ async function handleLogin(args) {
 
   if (!process.stdin.isTTY) {
     throw new Error(
-      "Use 'codex3_m login --import-current' or run 'codex3_m login' in an interactive terminal.",
+      `Use '${MANAGER_COMMAND_NAME} login --import-current' or run '${MANAGER_COMMAND_NAME} login' in an interactive terminal.`,
     );
   }
 
@@ -2433,7 +2599,7 @@ async function handleLogin(args) {
 async function handleActivate(state, args) {
   const profileId = args[0];
   if (!profileId) {
-    throw new Error("Usage: codex3_m activate <profile-id> [--force]");
+    throw new Error(`Usage: ${MANAGER_COMMAND_NAME} activate <profile-id> [--force]`);
   }
 
   let force = false;
@@ -2475,7 +2641,7 @@ async function handleUseCodex3(state, args) {
 async function handleRename(state, args) {
   const profileId = args[0];
   if (!profileId) {
-    throw new Error("Usage: codex3_m rename <profile-id> --alias <manual-name>");
+    throw new Error(`Usage: ${MANAGER_COMMAND_NAME} rename <profile-id> --alias <manual-name>`);
   }
 
   let alias = null;
@@ -2503,7 +2669,7 @@ async function handleRename(state, args) {
 async function handleDelete(state, args) {
   const profileId = args[0];
   if (!profileId) {
-    throw new Error("Usage: codex3_m delete <profile-id> [--force]");
+    throw new Error(`Usage: ${MANAGER_COMMAND_NAME} delete <profile-id> [--force]`);
   }
 
   let force = false;
@@ -2543,7 +2709,8 @@ async function handleProviderShow(state, args) {
   console.log(`Provider name    : ${provider.provider_name}`);
   console.log(`Base URL         : ${provider.base_url}`);
   console.log(`Model            : ${provider.model}`);
-  console.log(`Review model     : ${provider.review_model}`);
+  console.log(`Review model     : ${provider.review_model || "(none)"}`);
+  console.log(`Preferred auth   : ${provider.preferred_auth_method || "(none)"}`);
   console.log(`Reasoning effort : ${provider.model_reasoning_effort}`);
   console.log(`Context window   : ${provider.model_context_window}`);
   console.log(`Auto compact     : ${provider.model_auto_compact_token_limit}`);
@@ -2555,44 +2722,85 @@ async function handleProviderSet(args) {
   const next = {
     ...current,
   };
+  const providedKeys = new Set();
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--command-name") {
       next.command_name = parseOptionValue(args, index, arg);
+      providedKeys.add("command_name");
       index += 1;
     } else if (arg === "--mode") {
       next.mode = normalizeProviderMode(parseOptionValue(args, index, arg));
+      providedKeys.add("mode");
       index += 1;
     } else if (arg === "--third-party-home") {
       next.third_party_home = parseOptionValue(args, index, arg);
+      providedKeys.add("third_party_home");
       index += 1;
     } else if (arg === "--shared-codex-home") {
       next.shared_codex_home = parseOptionValue(args, index, arg);
+      providedKeys.add("shared_codex_home");
       index += 1;
     } else if (arg === "--provider-name") {
       next.provider_name = parseOptionValue(args, index, arg);
+      providedKeys.add("provider_name");
       index += 1;
     } else if (arg === "--base-url") {
       next.base_url = parseOptionValue(args, index, arg);
+      providedKeys.add("base_url");
       index += 1;
     } else if (arg === "--model") {
       next.model = parseOptionValue(args, index, arg);
+      providedKeys.add("model");
       index += 1;
     } else if (arg === "--review-model") {
       next.review_model = parseOptionValue(args, index, arg);
+      providedKeys.add("review_model");
+      index += 1;
+    } else if (arg === "--preferred-auth-method") {
+      next.preferred_auth_method = parseOptionValue(args, index, arg);
+      providedKeys.add("preferred_auth_method");
+      index += 1;
+    } else if (arg === "--requires-openai-auth") {
+      next.requires_openai_auth = parseOptionValue(args, index, arg);
+      providedKeys.add("requires_openai_auth");
+      index += 1;
+    } else if (arg === "--supports-websockets") {
+      next.supports_websockets = parseOptionValue(args, index, arg);
+      providedKeys.add("supports_websockets");
       index += 1;
     } else if (arg === "--model-reasoning-effort") {
       next.model_reasoning_effort = parseOptionValue(args, index, arg);
+      providedKeys.add("model_reasoning_effort");
       index += 1;
     } else if (arg === "--model-context-window") {
       next.model_context_window = parseOptionValue(args, index, arg);
+      providedKeys.add("model_context_window");
       index += 1;
     } else if (arg === "--model-auto-compact-token-limit") {
       next.model_auto_compact_token_limit = parseOptionValue(args, index, arg);
+      providedKeys.add("model_auto_compact_token_limit");
       index += 1;
     } else {
       throw new Error(`Unknown provider set option: ${arg}`);
+    }
+  }
+
+  if (providedKeys.has("mode")) {
+    for (const resetKey of [
+      "provider_name",
+      "base_url",
+      "model",
+      "review_model",
+      "preferred_auth_method",
+      "requires_openai_auth",
+      "supports_websockets",
+      "model_reasoning_effort",
+    ]) {
+      if (!providedKeys.has(resetKey)) {
+        delete next[resetKey];
+      }
     }
   }
 
@@ -2620,7 +2828,7 @@ async function handleMode(state, args) {
   if (subcommand === "set") {
     const modeArg = rest[0];
     if (!modeArg) {
-      throw new Error("Usage: codex3_m mode set <compat|stable-http>");
+      throw new Error(`Usage: ${MANAGER_COMMAND_NAME} mode set <compat|stable-http|api111>`);
     }
     await handleProviderSet(["--mode", modeArg]);
     return;

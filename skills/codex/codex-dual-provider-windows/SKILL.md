@@ -11,6 +11,7 @@ description: Maintain the Windows split setup where official Codex stays officia
 - Keep third-party auth/config isolated from the official lane.
 - Treat `codex3_m` as the manager for third-party API key profiles.
 - Keep session/history sharing as broad as safely possible without mixing auth carriers.
+- When a new provider tutorial should be tested safely, prefer a second parallel command/home pair such as `codex31` + `codex31_m` instead of rewriting the existing `codex3` lane in place.
 
 ## Stable Responsibilities
 
@@ -47,6 +48,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
    - third-party API key profile management
    - Desktop follow-mode switching
    - advanced provider compatibility (`provider` / `mode`)
+   - safe rollout of a new provider tutorial through a parallel lane such as `codex31`
 5. Use bundled installers and validators when possible.
 6. Validate separation, sharing, and Desktop follow-mode behavior after changes.
 
@@ -61,12 +63,16 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 
 - `scripts/install_windows.ps1`
   Install or update `codex3_m` plus the Windows split-lane adapter.
+- `scripts/install_codex31_api111_windows.ps1`
+  Install the safe parallel `codex31` + `codex31_m` lane for the newer `api111` tutorial shape.
 - `scripts/install_codex3_wrapper.ps1`
   Install or update the `codex3` wrapper and session-sharing links.
 - `scripts/validate_codex3_manager.js`
   Validate saved third-party profiles, wrapper state, shared session targets, and Desktop follow-mode assumptions.
 - `assets/windows-runtime/`
   Current Windows runtime for `codex3_m`.
+- `references/codex31-api111-quickstart.md`
+  Fast reproduction steps for installing the parallel `codex31` lane on another Windows machine.
 - `references/troubleshooting.md`
   Use for common split-lane failures and provider drift.
 

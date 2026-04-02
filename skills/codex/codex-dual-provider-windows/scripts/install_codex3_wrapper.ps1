@@ -6,8 +6,11 @@ param(
   [string]$ProviderName = "openai",
   [string]$BaseUrl = "https://sub.aimizy.com",
   [string]$Model = "gpt-5.4",
-  [string]$ReviewModel = "gpt-5.4",
+  [string]$ReviewModel = "",
   [string]$ModelReasoningEffort = "xhigh",
+  [string]$PreferredAuthMethod = "",
+  [Nullable[bool]]$RequiresOpenAiAuth = $null,
+  [Nullable[bool]]$SupportsWebsockets = $null,
   [int]$ModelContextWindow = 1000000,
   [int]$ModelAutoCompactTokenLimit = 900000,
   [string]$GlobalBinDir = "$env:APPDATA\npm",
@@ -113,6 +116,15 @@ function Get-EffectiveOpenAiBaseUrl {
   return "$trimmed/v1"
 }
 
+function Get-TomlBooleanLiteral {
+  param([Parameter(Mandatory = $true)][bool]$Value)
+
+  if ($Value) {
+    return "true"
+  }
+  return "false"
+}
+
 function New-ThirdPartyConfig {
   param(
     [string]$Provider,
@@ -120,6 +132,9 @@ function New-ThirdPartyConfig {
     [string]$ModelName,
     [string]$ReviewModelName,
     [string]$ReasoningEffort,
+    [string]$PreferredAuthMode,
+    [Nullable[bool]]$RequiresOpenAiAuthSetting,
+    [Nullable[bool]]$SupportsWebsocketsSetting,
     [int]$ContextWindow,
     [int]$AutoCompactTokenLimit
   )
@@ -141,10 +156,27 @@ function New-ThirdPartyConfig {
   }
 
   $lines += @(
-    ('model = "{0}"' -f $ModelName),
-    ('review_model = "{0}"' -f $ReviewModelName),
+    ('model = "{0}"' -f $ModelName)
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$ReviewModelName)) {
+    $lines += @(
+      ('review_model = "{0}"' -f $ReviewModelName)
+    )
+  }
+
+  $lines += @(
     ('model_reasoning_effort = "{0}"' -f $ReasoningEffort),
-    'disable_response_storage = true',
+    'disable_response_storage = true'
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$PreferredAuthMode)) {
+    $lines += @(
+      ('preferred_auth_method = "{0}"' -f $PreferredAuthMode)
+    )
+  }
+
+  $lines += @(
     'network_access = "enabled"',
     'windows_wsl_setup_acknowledged = true',
     ('model_context_window = {0}' -f $ContextWindow),
@@ -157,9 +189,19 @@ function New-ThirdPartyConfig {
       ('[model_providers.{0}]' -f $Provider),
       ('name = "{0}"' -f $Provider),
       ('base_url = "{0}"' -f $Url),
-      'wire_api = "responses"',
-      'requires_openai_auth = true'
+      'wire_api = "responses"'
     )
+
+    if ($null -ne $RequiresOpenAiAuthSetting) {
+      $lines += @(
+        ('requires_openai_auth = {0}' -f (Get-TomlBooleanLiteral -Value ([bool]$RequiresOpenAiAuthSetting)))
+      )
+    }
+    if ($null -ne $SupportsWebsocketsSetting) {
+      $lines += @(
+        ('supports_websockets = {0}' -f (Get-TomlBooleanLiteral -Value ([bool]$SupportsWebsocketsSetting)))
+      )
+    }
   }
 
   $lines += @(
@@ -180,6 +222,9 @@ function New-WrapperPs1 {
     [string]$ModelName,
     [string]$ReviewModelName,
     [string]$ReasoningEffort,
+    [string]$PreferredAuthMode,
+    [Nullable[bool]]$RequiresOpenAiAuthSetting,
+    [Nullable[bool]]$SupportsWebsocketsSetting,
     [int]$ContextWindow,
     [int]$AutoCompactTokenLimit
   )
@@ -203,10 +248,27 @@ function New-WrapperPs1 {
   }
 
   $configBootstrapLines += @(
-    ('    (''model = "{0}"'' -f $modelName),' -f $ModelName),
-    ('    (''review_model = "{0}"'' -f $reviewModelName),' -f $ReviewModelName),
+    ('    (''model = "{0}"'' -f $modelName),' -f $ModelName)
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$ReviewModelName)) {
+    $configBootstrapLines += @(
+      ('    (''review_model = "{0}"'' -f $reviewModelName),' -f $ReviewModelName)
+    )
+  }
+
+  $configBootstrapLines += @(
     ('    (''model_reasoning_effort = "{0}"'' -f $reasoningEffort),' -f $ReasoningEffort),
-    '    ''disable_response_storage = true'',',
+    '    ''disable_response_storage = true'','
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$PreferredAuthMode)) {
+    $configBootstrapLines += @(
+      ('    (''preferred_auth_method = "{0}"'' -f $preferredAuthMethod),' -f $PreferredAuthMode)
+    )
+  }
+
+  $configBootstrapLines += @(
     '    ''network_access = "enabled"'',',
     '    ''windows_wsl_setup_acknowledged = true'',',
     ('    (''model_context_window = {0}'' -f $contextWindow),' -f $ContextWindow),
@@ -219,9 +281,18 @@ function New-WrapperPs1 {
       ('    (''[model_providers.{0}]'' -f $providerName),' -f $Provider),
       ('    (''name = "{0}"'' -f $providerName),' -f $Provider),
       ('    (''base_url = "{0}"'' -f $baseUrl),' -f $Url),
-      '    ''wire_api = "responses"'',',
-      '    ''requires_openai_auth = true'','
+      '    ''wire_api = "responses"'','
     )
+    if ($null -ne $RequiresOpenAiAuthSetting) {
+      $configBootstrapLines += @(
+        ('    ''requires_openai_auth = {0}'',' -f (Get-TomlBooleanLiteral -Value ([bool]$RequiresOpenAiAuthSetting)))
+      )
+    }
+    if ($null -ne $SupportsWebsocketsSetting) {
+      $configBootstrapLines += @(
+        ('    ''supports_websockets = {0}'',' -f (Get-TomlBooleanLiteral -Value ([bool]$SupportsWebsocketsSetting)))
+      )
+    }
   }
 
   $configBootstrapLines += @(
@@ -234,11 +305,21 @@ function New-WrapperPs1 {
     '  "-c", ''cli_auth_credentials_store="file"'',',
     '  "-c", ''features.apps=false'',',
     ('  "-c", (''model="{0}"'' -f $modelName),' -f $ModelName),
-    ('  "-c", (''review_model="{0}"'' -f $reviewModelName),' -f $ReviewModelName),
     ('  "-c", (''model_reasoning_effort="{0}"'' -f $reasoningEffort),' -f $ReasoningEffort),
     ('  "-c", (''model_context_window={0}'' -f $contextWindow),' -f $ContextWindow),
     ('  "-c", (''model_auto_compact_token_limit={0}'' -f $autoCompactTokenLimit),' -f $AutoCompactTokenLimit)
   )
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$ReviewModelName)) {
+    $forcedConfigLines += @(
+      ('  "-c", (''review_model="{0}"'' -f $reviewModelName),' -f $ReviewModelName)
+    )
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$PreferredAuthMode)) {
+    $forcedConfigLines += @(
+      ('  "-c", (''preferred_auth_method="{0}"'' -f $preferredAuthMethod),' -f $PreferredAuthMode)
+    )
+  }
 
   if ($useBuiltInOpenAi) {
     $forcedConfigLines = @(
@@ -251,9 +332,18 @@ function New-WrapperPs1 {
     ) + $forcedConfigLines + @(
       ('  "-c", (''model_providers.{0}.name="{0}"'' -f $providerName),' -f $Provider),
       ('  "-c", (''model_providers.{0}.base_url="{1}"'' -f $providerName, $baseUrl),' -f $Provider, $Url),
-      ('  "-c", (''model_providers.{0}.wire_api="responses"'' -f $providerName),' -f $Provider),
-      ('  "-c", (''model_providers.{0}.requires_openai_auth=true'' -f $providerName)' -f $Provider)
+      ('  "-c", (''model_providers.{0}.wire_api="responses"'' -f $providerName),' -f $Provider)
     )
+    if ($null -ne $RequiresOpenAiAuthSetting) {
+      $forcedConfigLines += @(
+        ('  "-c", (''model_providers.{0}.requires_openai_auth={1}'' -f $providerName, "{1}")' -f $Provider, (Get-TomlBooleanLiteral -Value ([bool]$RequiresOpenAiAuthSetting)))
+      )
+    }
+    if ($null -ne $SupportsWebsocketsSetting) {
+      $forcedConfigLines += @(
+        ('  "-c", (''model_providers.{0}.supports_websockets={1}'' -f $providerName, "{1}")' -f $Provider, (Get-TomlBooleanLiteral -Value ([bool]$SupportsWebsocketsSetting)))
+      )
+    }
   }
 
   if ($forcedConfigLines.Count -gt 0) {
@@ -278,6 +368,7 @@ function New-WrapperPs1 {
     ('$modelName = "{0}"' -f $ModelName),
     ('$reviewModelName = "{0}"' -f $ReviewModelName),
     ('$reasoningEffort = "{0}"' -f $ReasoningEffort),
+    ('$preferredAuthMethod = "{0}"' -f $PreferredAuthMode),
     ('$contextWindow = {0}' -f $ContextWindow),
     ('$autoCompactTokenLimit = {0}' -f $AutoCompactTokenLimit),
     '$utf8NoBom = New-Object System.Text.UTF8Encoding($false)',
@@ -476,6 +567,9 @@ if ($ForceRewriteConfig -or -not (Test-Path $configPath)) {
     -ModelName $Model `
     -ReviewModelName $ReviewModel `
     -ReasoningEffort $ModelReasoningEffort `
+    -PreferredAuthMode $PreferredAuthMethod `
+    -RequiresOpenAiAuthSetting $RequiresOpenAiAuth `
+    -SupportsWebsocketsSetting $SupportsWebsockets `
     -ContextWindow $ModelContextWindow `
     -AutoCompactTokenLimit $ModelAutoCompactTokenLimit
   Write-Utf8NoBom -Path $configPath -Content $configContent
@@ -505,6 +599,9 @@ $wrapperPs1 = New-WrapperPs1 `
   -ModelName $Model `
   -ReviewModelName $ReviewModel `
   -ReasoningEffort $ModelReasoningEffort `
+  -PreferredAuthMode $PreferredAuthMethod `
+  -RequiresOpenAiAuthSetting $RequiresOpenAiAuth `
+  -SupportsWebsocketsSetting $SupportsWebsockets `
   -ContextWindow $ModelContextWindow `
   -AutoCompactTokenLimit $ModelAutoCompactTokenLimit
 $wrapperCmd = New-WrapperCmd -CmdName $CommandName
