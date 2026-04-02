@@ -9,7 +9,8 @@
 - `Account Manage` is only for official ChatGPT snapshots.
 - `API Key Manage` is only for official API key profiles.
 - `codex.exe` means "make the Desktop lane follow the official identity currently managed by `codex_m`".
-- On Windows, the plain `codex` CLI is expected to use a separate official CLI home such as `~/.codex-official`, so Desktop follow-mode does not imply CLI switching.
+- On Windows, the plain `codex` CLI is expected to use a separate official CLI home such as `~/.codex-official`.
+- On the current Windows adapter, the managed `codex.ps1` wrapper also injects official `-c` overrides such as `model_provider="openai"` and `cli_auth_credentials_store="file"` and clears inherited `OPENAI_*` env overrides before launch, so Desktop follow-mode does not imply CLI switching.
 - `Enter` applies the selected identity in the current section.
 - `Tab` opens section-specific actions such as `Rename`, `Logout`, or `Delete`.
 

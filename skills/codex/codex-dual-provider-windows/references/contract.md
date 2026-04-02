@@ -10,6 +10,7 @@
 - `codex.exe to use` means "choose whether Desktop `codex.exe` should follow the active third-party profile".
 - `codex.exe to use` is a Desktop bridge label only; it does not mean the plain `codex` CLI command has been renamed or switched.
 - On the current Windows adapter, that Desktop-only guarantee depends on the managed plain `codex` launcher being pinned to `~/.codex-official`.
+- On the current Windows adapter, the managed plain `codex` launcher must also inject official `-c` overrides such as `model_provider="openai"` and `cli_auth_credentials_store="file"` and clear inherited `OPENAI_*` env overrides, otherwise plain `codex` can still drift onto the third-party lane.
 - Advanced provider compatibility settings remain available, but they are not the main identity story.
 
 ## Separation Rules
@@ -19,6 +20,7 @@
 - Third-party auth/config are isolated from the official lane.
 - Only the explicit `codex.exe to use` bridge may copy the active third-party auth/config into the Desktop lane.
 - Do not use the Desktop bridge when the plain `codex` launcher is unmanaged or still reading `~/.codex`.
+- Do not treat `CODEX_HOME` pinning alone as enough to prove the bridge is safe; verify the managed official launcher behavior too.
 
 ## Sharing Rules
 

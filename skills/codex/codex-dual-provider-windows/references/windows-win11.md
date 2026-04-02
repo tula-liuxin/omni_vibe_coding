@@ -41,6 +41,8 @@ Expected:
 
 - `codex3_m` launchers exist.
 - plain `codex` launcher is wrapped to pin `CODEX_HOME` to `%USERPROFILE%\.codex-official`.
+- the managed `codex.ps1` wrapper injects the official provider/auth overrides for plain CLI launches, including `model_provider="openai"` and `cli_auth_credentials_store="file"`.
+- the managed `codex.ps1` wrapper clears inherited `OPENAI_API_KEY` and `OPENAI_BASE_URL` before launching the child Codex process.
 - `codex3` wrapper exists.
 - third-party auth/config stay under the third-party home.
 - shared session targets resolve to the shared Codex home.
@@ -52,3 +54,4 @@ Expected:
 - Keep third-party auth isolated from the shared official home.
 - Do not hard-link or junction `state_5.sqlite*`.
 - Treat `provider` / `mode` as advanced compatibility controls.
+- Do not assume `CODEX_HOME` pinning alone proves plain `codex` isolation; validate the official wrapper overrides too.

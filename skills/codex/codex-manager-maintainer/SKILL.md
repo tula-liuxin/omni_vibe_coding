@@ -31,6 +31,7 @@ description: Maintain `codex_m` as the machine-local manager for official Codex 
 - `API Key Manage` operates on saved official API key profiles only.
 - `codex.exe` means "make the Desktop lane follow the official identity managed by `codex_m`".
 - On Windows, the plain `codex` CLI should be wrapped to use `~/.codex-official`, so Desktop `codex.exe` follow-mode and CLI follow-mode stay separate.
+- On current Windows builds, that wrapper must also force the official provider/auth overrides for plain CLI launches; `CODEX_HOME` pinning alone is not a strong enough guarantee.
 - Switching the official identity updates auth carriers and managed config keys; it does not mean swapping the whole Codex home.
 - Shared session/history/thread metadata should stay aligned as much as safely possible.
 - Auth carriers and managed config keys stay separate from shared session/history state.

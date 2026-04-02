@@ -23,7 +23,7 @@ Expected:
 - `codex3` keeps third-party auth/config under `%userprofile%\\.codex-apikey`.
 - `codex3` shares `sessions/`, `archived_sessions/`, and `session_index.jsonl` with the shared Codex home under `%userprofile%\\.codex`.
 - `codex3_m use-codex3 --force` is the thing behind the `codex.exe to use` action; it only changes the Desktop lane to follow the active third-party profile.
-- If plain `codex` also switches provider after that action, the managed plain `codex` launcher is missing or not pinned to `~/.codex-official`.
+- If plain `codex` also switches provider after that action, the managed plain `codex` launcher is missing, incomplete, or not pinned to `~/.codex-official` with the official provider/auth overrides.
 
 ## Symptom: `codex3` is slow or keeps showing `Reconnecting...`
 
@@ -72,7 +72,8 @@ If the provider tutorial shows examples under `%userprofile%\\.codex\\config.tom
 Likely cause:
 
 - The managed plain `codex` launcher is missing or still reads `~/.codex` directly.
-- Without the `~/.codex-official` wrapper, Desktop follow-mode and CLI follow-mode collapse into the same home.
+- The launcher pins `CODEX_HOME` but does not also force the official provider/auth overrides for plain CLI runs.
+- Without the full managed wrapper behavior, Desktop follow-mode and CLI follow-mode collapse into the same lane.
 
 Fix:
 
@@ -82,18 +83,22 @@ Fix:
 powershell -ExecutionPolicy Bypass -File "$HOME\.codex\skills\custom\codex-manager-maintainer\scripts\install_windows.ps1"
 ```
 
-2. Verify the launcher now pins `CODEX_HOME` to `~/.codex-official`:
+2. Verify the launcher now pins `CODEX_HOME` to `~/.codex-official` and also forces the official overrides:
 
 ```powershell
-Select-String -Path "$env:APPDATA\npm\codex.ps1" -Pattern "\.codex-official","CODEX_HOME"
-Select-String -Path "$env:APPDATA\npm\codex.cmd" -Pattern "\.codex-official","CODEX_HOME"
+Select-String -Path "$env:APPDATA\npm\codex.ps1" -Pattern "\.codex-official","CODEX_HOME",'model_provider="openai"','cli_auth_credentials_store="file"',"OPENAI_API_KEY","OPENAI_BASE_URL"
+Select-String -Path "$env:APPDATA\npm\codex.cmd" -Pattern "codex.ps1","ExecutionPolicy Bypass"
 node "$HOME\.codex\skills\custom\codex-manager-maintainer\scripts\validate_codex_manager.js"
+codex exec --skip-git-repo-check "Write only this exact line: OFFICIAL_VERIFY"
 ```
 
 Expected:
 
-- `codex.ps1` and `codex.cmd` both mention `CODEX_HOME` and `.codex-official`.
+- `codex.ps1` mentions `CODEX_HOME`, `.codex-official`, `model_provider="openai"`, and `cli_auth_credentials_store="file"`.
+- `codex.ps1` also removes inherited `OPENAI_API_KEY` and `OPENAI_BASE_URL` during child runs.
+- `codex.cmd` delegates to `codex.ps1`.
 - `validate_codex_manager.js` no longer reports launcher drift.
+- the `codex exec` startup block reports `provider: openai`.
 - After that, `codex3_m use-codex3 --force` only changes Desktop `codex.exe`; plain `codex` stays on the official CLI lane.
 
 ## Symptom: `codex3` does not see sessions created by plain `codex`

@@ -47,6 +47,8 @@ Expected:
 
 - `codex_m` launcher exists.
 - plain `codex` launcher is wrapped to pin `CODEX_HOME` to `%USERPROFILE%\.codex-official`.
+- the managed `codex.ps1` wrapper injects the official provider/auth overrides for plain CLI launches, including `model_provider="openai"` and `cli_auth_credentials_store="file"`.
+- the managed `codex.ps1` wrapper clears inherited `OPENAI_API_KEY` and `OPENAI_BASE_URL` before launching the child Codex process.
 - runtime files exist under manager home.
 - managed config keys remain top-level.
 - Home shows official ChatGPT and official API key management.
@@ -60,3 +62,4 @@ Expected:
 - Do not hard-link or junction live SQLite `state_5.sqlite*` files between homes.
 - Do not present `.codex-official` as a permanent cross-platform requirement.
 - Do not claim Desktop-only follow-mode unless the plain `codex` wrapper still points at `.codex-official`.
+- Do not treat `CODEX_HOME` pinning by itself as sufficient proof that plain `codex` is isolated; the launcher must also force the official provider/auth overrides.

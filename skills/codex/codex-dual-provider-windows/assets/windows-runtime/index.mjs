@@ -1997,9 +1997,11 @@ async function interactiveResolveForce(actionLabel) {
 
   console.log("");
   console.log(`Running Codex CLI detected: ${formatProcessSummary(processes)}`);
-  console.log(`This ${actionLabel} updates the shared third-party auth/profile files.`);
   console.log(
-    "Already-running Codex windows keep their old in-memory auth until they are restarted.",
+    `This ${actionLabel} updates the Desktop third-party bridge and shared third-party auth/profile files.`,
+  );
+  console.log(
+    "Already-running Codex windows keep their old in-memory auth until they are restarted. Plain codex CLI stays on the managed official wrapper.",
   );
   const confirmed = await promptConfirmPrompt("Force continue anyway?", false);
   return {

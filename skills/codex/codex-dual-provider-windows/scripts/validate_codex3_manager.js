@@ -257,12 +257,29 @@ if (process.platform === "win32") {
     if (!codexPs1Text.includes("CODEX_HOME") || !codexPs1Text.includes(officialCliHome)) {
       issues.push(`codex.ps1 does not pin CODEX_HOME to ${officialCliHome}.`);
     }
+    if (
+      !codexPs1Text.includes('model_provider="openai"') ||
+      !codexPs1Text.includes('cli_auth_credentials_store="file"')
+    ) {
+      issues.push(
+        "codex.ps1 does not inject the managed official provider/auth overrides for plain codex launches.",
+      );
+    }
+    if (
+      !codexPs1Text.includes("Remove-Item Env:OPENAI_API_KEY") ||
+      !codexPs1Text.includes("Remove-Item Env:OPENAI_BASE_URL")
+    ) {
+      issues.push("codex.ps1 does not clear OPENAI_* environment overrides before launching plain codex.");
+    }
   }
 
   if (pathExists(codexCmdPath)) {
     const codexCmdText = readText(codexCmdPath);
-    if (!codexCmdText.includes("CODEX_HOME") || !codexCmdText.includes(officialCliHome)) {
-      issues.push(`codex.cmd does not pin CODEX_HOME to ${officialCliHome}.`);
+    if (
+      !codexCmdText.includes("codex.ps1") ||
+      !codexCmdText.includes("ExecutionPolicy Bypass")
+    ) {
+      issues.push("codex.cmd does not delegate to the managed codex.ps1 wrapper.");
     }
   }
 }

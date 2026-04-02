@@ -31,6 +31,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - `codex3_m` manages saved third-party API key profiles.
 - `codex.exe to use` means "choose whether Desktop `codex.exe` should follow the active third-party lane".
 - On Windows, that Desktop-only contract assumes the managed plain `codex` launcher is pinned to `~/.codex-official`.
+- On current Windows builds, that managed launcher must also force the official provider/auth overrides for plain CLI launches; `CODEX_HOME` pinning alone is not a strong enough guarantee.
 - Third-party auth/config remain isolated from the official lane.
 - Default shared state is limited to:
   - `sessions`
