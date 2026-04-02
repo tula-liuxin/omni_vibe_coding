@@ -74,7 +74,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - `assets/windows-runtime/`
   Current Windows runtime for `codex3_m`.
 - `references/codex31-api111-quickstart.md`
-  Fast reproduction steps for installing the parallel `codex31` lane on another Windows machine.
+  Minimal reproducible Windows path for installing the parallel `codex31` lane and verifying that plain `codex` still stays official.
 - `references/troubleshooting.md`
   Use for common split-lane failures and provider drift.
 
