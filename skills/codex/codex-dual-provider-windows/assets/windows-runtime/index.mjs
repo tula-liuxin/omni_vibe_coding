@@ -1231,7 +1231,7 @@ function buildPlainCodexThirdPartyProviderTableEntries(provider) {
 
 function applyPlainCodexThirdPartyBridge(provider) {
   ensureDir(OFFICIAL_HOME);
-  const commentLabel = "# codex3_m managed plain codex";
+  const commentLabel = "# codex3_m managed codex.exe bridge";
   let configText = pathExists(OFFICIAL_CONFIG_PATH) ? readText(OFFICIAL_CONFIG_PATH) : "";
   configText = writeManagedTopLevelTomlKeys(
     configText,
@@ -1469,7 +1469,7 @@ async function setPlainCodexThirdPartyMode(
   if (!silent) {
     const profile = requireProfile(state, activeProfileId);
     console.log(
-      `Plain codex now follows ${provider.command_name} using third-party profile: ${profile.alias} | ${readSavedProfileMaskedKey(profile.profile_id)}`,
+      `codex.exe now follows ${provider.command_name} using third-party profile: ${profile.alias} | ${readSavedProfileMaskedKey(profile.profile_id)}`,
     );
     if (skipProcessCheck) {
       console.log(
@@ -2092,7 +2092,7 @@ function printOverview(state) {
   console.log(`Shared Codex home: ${provider.shared_codex_home}`);
   console.log(`Provider: ${provider.provider_name} | ${provider.base_url}`);
   console.log(`Model: ${provider.model} | review ${provider.review_model || "(none)"}`);
-  console.log(`Plain codex mode: ${plainCodexMode}`);
+  console.log(`codex.exe to use: ${plainCodexMode}`);
   console.log(`Saved profiles: ${getProfiles(state).length}`);
   console.log(
     `Active profile: ${state.active_profile_id ? `${requireProfile(state, state.active_profile_id).alias} | ${readSavedProfileMaskedKey(state.active_profile_id)}` : "(none)"}`,
@@ -2443,7 +2443,7 @@ async function runOverviewPage() {
     const state = loadState();
     const choice = await selectChoice({
       title: "Home",
-      description: "Manage third-party API key profiles for codex3. codex CLI stays official; codex.exe only changes which lane Desktop follows.",
+      description: "Manage third-party API key profiles for codex3. The plain codex CLI stays official; 'codex.exe to use' only changes which lane Desktop follows.",
       state,
       choices: [
         {
@@ -2463,8 +2463,8 @@ async function runOverviewPage() {
         },
         {
           name: "use_codex3",
-          message: `Plain codex -> ${normalizeProvider(state.provider).command_name}`,
-          hint: "bridge ~/.codex to the active third-party profile without touching the launcher",
+          message: "codex.exe to use",
+          hint: `make Desktop codex.exe follow ${normalizeProvider(state.provider).command_name} without switching the plain codex CLI`,
         },
         {
           name: "quit",
@@ -2487,9 +2487,9 @@ async function runOverviewPage() {
       continue;
     }
     if (choice === "use_codex3") {
-      const decision = await interactiveResolveForce("codex.exe bridge");
+      const decision = await interactiveResolveForce("codex.exe to use");
       if (!decision.proceed) {
-        console.log("codex.exe bridge canceled.");
+        console.log("codex.exe to use canceled.");
         continue;
       }
       await setPlainCodexThirdPartyMode(loadState(), { skipProcessCheck: decision.force });
@@ -2522,10 +2522,10 @@ Usage:
   ${MANAGER_COMMAND_NAME} doctor
 
 Notes:
-  - Running plain '${MANAGER_COMMAND_NAME}' opens a Home page with Login, Manage, Provider (Advanced), Plain codex -> ${provider.command_name}, and Quit.
+  - Running plain '${MANAGER_COMMAND_NAME}' opens a Home page with Login, Manage, Provider (Advanced), codex.exe to use, and Quit.
   - ${MANAGER_COMMAND_NAME} manages saved third-party API key profiles first; provider and mode settings are advanced compatibility tools.
   - ${provider.command_name} always uses the isolated third-party home managed by ${MANAGER_COMMAND_NAME}.
-  - Plain codex follow-mode does not replace the launcher or swap the whole home.
+  - 'codex.exe to use' changes Desktop follow-mode only; it does not switch the plain codex CLI command.
   - The default shared targets are sessions, archived_sessions, and session_index.jsonl.
   - compat mode keeps third-party auth outside ~/.codex and aligns provider id with the built-in openai lane for better recent-session visibility.
   - stable-http mode uses a custom provider id with supports_websockets=false for gateways that reconnect too often.
@@ -2627,9 +2627,9 @@ async function handleUseCodex3(state, args) {
   }
 
   if (!force && process.stdin.isTTY) {
-    const decision = await interactiveResolveForce("codex.exe bridge");
+    const decision = await interactiveResolveForce("codex.exe to use");
     if (!decision.proceed) {
-      console.log("codex.exe bridge canceled.");
+      console.log("codex.exe to use canceled.");
       return;
     }
     force = decision.force;

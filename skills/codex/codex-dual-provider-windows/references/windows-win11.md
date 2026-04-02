@@ -42,7 +42,7 @@ Expected:
 - `codex3` wrapper exists.
 - third-party auth/config stay under the third-party home.
 - shared session targets resolve to the shared Codex home.
-- help text and doctor output describe `codex.exe` as Desktop follow-mode.
+- help text and doctor output describe `codex.exe to use` as a Desktop-only bridge label, not a plain `codex` CLI switch.
 
 ## Windows Guardrails
 

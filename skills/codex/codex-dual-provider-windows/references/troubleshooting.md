@@ -22,7 +22,7 @@ Expected:
 - The mirrored third-party `config.toml` under `%userprofile%\\.codex-apikey` contains the tutorial-required provider block.
 - `codex3` keeps third-party auth/config under `%userprofile%\\.codex-apikey`.
 - `codex3` shares `sessions/`, `archived_sessions/`, and `session_index.jsonl` with the shared Codex home under `%userprofile%\\.codex`.
-- `codex3_m use-codex3 --force` is the thing that makes the Desktop lane follow the active third-party profile.
+- `codex3_m use-codex3 --force` is the thing behind the `codex.exe to use` action; it only changes the Desktop lane to follow the active third-party profile.
 
 ## Symptom: `codex3` is slow or keeps showing `Reconnecting...`
 
@@ -63,7 +63,7 @@ If the provider tutorial shows examples under `%userprofile%\\.codex\\config.tom
 - keep third-party auth under `%userprofile%\\.codex-apikey\\auth.json`,
 - mirror the provider block under `%userprofile%\\.codex-apikey\\config.toml`,
 - run `codex3` with that third-party auth/config while sharing session directories from `%userprofile%\\.codex`,
-- use the manager quick action only when you want Desktop `codex.exe` to follow the third-party lane,
+- use the `codex.exe to use` manager action only when you want Desktop `codex.exe` to follow the third-party lane,
 - and leave official `~\\.codex\\auth.json` untouched.
 
 ## Symptom: `codex3` does not see sessions created by plain `codex`
@@ -101,7 +101,7 @@ Likely cause:
 
 Fix:
 
-1. Use plain `codex` after `codex3_m use-codex3 --force` when you want Desktop to follow the third-party lane while keeping the official home as the current sidebar/thread index.
+1. Use Desktop `codex.exe` after `codex3_m use-codex3 --force` when you want the Desktop lane to follow the third-party profile while keeping the official home as the current sidebar/thread index.
 2. Start `codex3` from the same workspace path you expect to appear in the sidebar.
 3. Do not hard-link or junction `state_5.sqlite*` between homes. SQLite WAL/SHM files make that unsafe.
 

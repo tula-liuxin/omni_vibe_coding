@@ -7,7 +7,8 @@
 - Home is centered on third-party API key management.
 - `Login` saves or imports a third-party API key profile.
 - `Manage` switches, renames, or deletes saved third-party API key profiles.
-- `codex.exe` means "make the Desktop lane follow the active third-party profile".
+- `codex.exe to use` means "choose whether Desktop `codex.exe` should follow the active third-party profile".
+- `codex.exe to use` is a Desktop bridge label only; it does not mean the plain `codex` CLI command has been renamed or switched.
 - Advanced provider compatibility settings remain available, but they are not the main identity story.
 
 ## Separation Rules
@@ -15,7 +16,7 @@
 - Official `codex` remains official.
 - `codex3` remains the third-party lane.
 - Third-party auth/config are isolated from the official lane.
-- Only the explicit Desktop follow-mode bridge may copy the active third-party auth/config into the Desktop lane.
+- Only the explicit `codex.exe to use` bridge may copy the active third-party auth/config into the Desktop lane.
 
 ## Sharing Rules
 

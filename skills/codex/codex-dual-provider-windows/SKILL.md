@@ -29,7 +29,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - Official `codex` stays on the official lane.
 - `codex3` stays on the third-party lane.
 - `codex3_m` manages saved third-party API key profiles.
-- `codex.exe` means "make the Desktop lane follow the active third-party lane".
+- `codex.exe to use` means "choose whether Desktop `codex.exe` should follow the active third-party lane".
 - Third-party auth/config remain isolated from the official lane.
 - Default shared state is limited to:
   - `sessions`
@@ -46,11 +46,11 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 4. Confirm whether the task is about:
    - install or repair
    - third-party API key profile management
-   - Desktop follow-mode switching
+   - `codex.exe to use` / Desktop follow-mode switching
    - advanced provider compatibility (`provider` / `mode`)
    - safe rollout of a new provider tutorial through a parallel lane such as `codex31`
 5. Use bundled installers and validators when possible.
-6. Validate separation, sharing, and Desktop follow-mode behavior after changes.
+6. Validate separation, sharing, and `codex.exe to use` behavior after changes.
 
 ## Reading Rules
 
@@ -68,7 +68,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - `scripts/install_codex3_wrapper.ps1`
   Install or update the `codex3` wrapper and session-sharing links.
 - `scripts/validate_codex3_manager.js`
-  Validate saved third-party profiles, wrapper state, shared session targets, and Desktop follow-mode assumptions.
+  Validate saved third-party profiles, wrapper state, shared session targets, and `codex.exe to use` assumptions.
 - `assets/windows-runtime/`
   Current Windows runtime for `codex3_m`.
 - `references/codex31-api111-quickstart.md`
@@ -79,8 +79,8 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 ## Guardrails
 
 - Do not store third-party auth inside the official home.
-- Do not let `codex3_m` rewrite official manager state except for the explicit Desktop follow-mode bridge.
-- Do not describe `codex.exe` follow-mode as launcher replacement or whole-home replacement.
+- Do not let `codex3_m` rewrite official manager state except for the explicit `codex.exe to use` bridge.
+- Do not describe `codex.exe to use` as launcher replacement, plain `codex` CLI switching, or whole-home replacement.
 - Do not expand third-party default sharing beyond `sessions`, `archived_sessions`, and `session_index.jsonl` unless the task explicitly requires it and safety is clear.
 - Do not live-share SQLite `state_5.sqlite*` files between official and third-party homes.
 - Do not silently ignore user-supplied provider tutorial values when advanced provider compatibility is the task.
