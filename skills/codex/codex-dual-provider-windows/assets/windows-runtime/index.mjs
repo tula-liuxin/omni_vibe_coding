@@ -1291,11 +1291,22 @@ function assertPlainCodexLauncherUsesOfficialCliHome() {
   if (
     !codexPs1Text.includes("CODEX_HOME") ||
     !codexPs1Text.includes(OFFICIAL_CLI_HOME) ||
-    !codexCmdText.includes("CODEX_HOME") ||
-    !codexCmdText.includes(OFFICIAL_CLI_HOME)
+    !codexPs1Text.includes('model_provider="openai"') ||
+    !codexPs1Text.includes('cli_auth_credentials_store="file"') ||
+    !codexPs1Text.includes("Remove-Item Env:OPENAI_API_KEY") ||
+    !codexPs1Text.includes("Remove-Item Env:OPENAI_BASE_URL")
   ) {
     throw new Error(
       `The plain codex launcher is not pinned to ${OFFICIAL_CLI_HOME}. Repair codex_m first so 'codex.exe to use' only affects Desktop instead of the CLI.`,
+    );
+  }
+
+  if (
+    !codexCmdText.includes("codex.ps1") ||
+    !codexCmdText.includes("ExecutionPolicy Bypass")
+  ) {
+    throw new Error(
+      "The managed plain codex CMD launcher does not delegate to codex.ps1. Repair codex_m first so 'codex.exe to use' only affects Desktop instead of the CLI.",
     );
   }
 }
