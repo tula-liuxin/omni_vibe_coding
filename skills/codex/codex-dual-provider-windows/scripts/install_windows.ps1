@@ -8,7 +8,7 @@ param(
   [string]$ThirdPartyHome = (Join-Path $env:USERPROFILE ".codex-apikey"),
   [string]$SharedCodexHome = (Join-Path $env:USERPROFILE ".codex"),
   [string]$BaseUrl = "https://api.xcode.best/v1",
-  [string]$Model = "gpt-5-codex",
+  [string]$Model = "gpt-5.4",
   [string]$ReviewModel = "",
   [string]$ModelReasoningEffort = "high",
   [int]$ModelContextWindow = 1000000,

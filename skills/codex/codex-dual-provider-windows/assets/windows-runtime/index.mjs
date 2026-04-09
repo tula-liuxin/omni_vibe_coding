@@ -109,7 +109,7 @@ const DEFAULT_PROVIDER = {
   mode: PROVIDER_MODE_API111,
   provider_name: DEFAULT_API111_PROVIDER_ID,
   base_url: "https://api.xcode.best/v1",
-  model: "gpt-5-codex",
+  model: "gpt-5.4",
   review_model: null,
   model_reasoning_effort: "high",
   preferred_auth_method: "apikey",
@@ -397,7 +397,7 @@ function getModeDefaults(mode) {
   return {
     provider_name: DEFAULT_API111_PROVIDER_ID,
     base_url: "https://api.xcode.best/v1",
-    model: "gpt-5-codex",
+    model: "gpt-5.4",
     review_model: null,
     model_reasoning_effort: "high",
     preferred_auth_method: "apikey",

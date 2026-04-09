@@ -22,7 +22,7 @@ const DEFAULT_PROVIDER = {
   shared_codex_home: path.join(userHome(), ".codex"),
   provider_name: "api111",
   base_url: "https://api.xcode.best/v1",
-  model: "gpt-5-codex",
+  model: "gpt-5.4",
   model_reasoning_effort: "high",
   preferred_auth_method: "apikey",
   model_context_window: 1000000,

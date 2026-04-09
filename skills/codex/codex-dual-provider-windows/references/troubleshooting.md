@@ -37,7 +37,7 @@ powershell -ExecutionPolicy Bypass -File scripts/install_windows.ps1
 2. Rewrite the live config through the manager:
 
 ```powershell
-codex3_m config set --command-name codex3 --third-party-home "$HOME\.codex-apikey" --shared-codex-home "$HOME\.codex" --base-url "https://api.xcode.best/v1" --model "gpt-5-codex" --model-reasoning-effort high --model-context-window 1000000 --model-auto-compact-token-limit 900000
+codex3_m config set --command-name codex3 --third-party-home "$HOME\.codex-apikey" --shared-codex-home "$HOME\.codex" --base-url "https://api.xcode.best/v1" --model "gpt-5.4" --model-reasoning-effort high --model-context-window 1000000 --model-auto-compact-token-limit 900000
 ```
 
 3. Close the currently reconnecting `codex3`/Codex windows and start a fresh run.

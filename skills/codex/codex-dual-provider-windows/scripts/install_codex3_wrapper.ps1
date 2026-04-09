@@ -6,7 +6,7 @@ param(
   [string]$SharedCodexHome = "$env:USERPROFILE\.codex",
   [string]$ProviderName = "api111",
   [string]$BaseUrl = "https://api.xcode.best/v1",
-  [string]$Model = "gpt-5-codex",
+  [string]$Model = "gpt-5.4",
   [string]$ReviewModel = "",
   [string]$ModelReasoningEffort = "high",
   [string]$PreferredAuthMethod = "apikey",
