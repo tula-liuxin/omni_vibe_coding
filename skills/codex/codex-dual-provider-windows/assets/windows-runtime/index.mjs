@@ -7,44 +7,57 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import readlinePromises from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 import { DatabaseSync } from "node:sqlite";
-import enquirer from "enquirer";
-
-const { Select, Input, Confirm, Password } = enquirer;
-
-function isIgnorablePromptCloseError(error) {
-  return error && typeof error === "object" && error.code === "ERR_USE_AFTER_CLOSE";
-}
-
-function installPromptCloseGuards() {
-  process.on("uncaughtException", (error) => {
-    if (isIgnorablePromptCloseError(error)) {
-      process.exitCode = 0;
-      return;
-    }
-    console.error(`Error: ${error.message || error}`);
-    process.exit(1);
-  });
-
-  process.on("unhandledRejection", (reason) => {
-    if (isIgnorablePromptCloseError(reason)) {
-      process.exitCode = 0;
-      return;
-    }
-    console.error(`Error: ${reason?.message || reason}`);
-    process.exit(1);
-  });
-}
+import {
+  ensureDir,
+  pathExists,
+  readJson,
+  readText,
+  safeRealPath,
+  writeJson,
+  writeText,
+} from "./_shared/common.mjs";
+import { syncDesktopHomeFromSource } from "./_shared/desktop-home-sync.mjs";
+import {
+  PLAIN_CODEX_MODE_OFFICIAL,
+  PLAIN_CODEX_MODE_THIRD_PARTY,
+  getPlainCodexMode as getPlainCodexModeState,
+  readPlainCodexModeState as readPlainCodexModeStateFile,
+  setPlainCodexModeState as writePlainCodexModeState,
+} from "./_shared/plain-codex-mode.mjs";
+import {
+  assertNoRunningCodexProcesses as assertNoRunningCodexProcessesCore,
+  detectRunningCodexProcesses as detectRunningCodexProcessesCore,
+  formatProcessSummary as formatProcessSummaryCore,
+} from "./_shared/processes.mjs";
+import {
+  Confirm,
+  Input,
+  Password,
+  Select,
+  installPromptCloseGuards,
+  promptConfirmPrompt as promptConfirmPromptCore,
+  promptInputPrompt as promptInputPromptCore,
+  promptLine as promptLineCore,
+  promptRequired as promptRequiredCore,
+  promptSecretPrompt as promptSecretPromptCore,
+  promptYesNo as promptYesNoCore,
+  runPrompt as runPromptCore,
+} from "./_shared/prompts.mjs";
+import {
+  copyDatabaseWithSidecars as copyDatabaseWithSidecarsCore,
+  findRecentRolloutsById as findRecentRolloutsByIdCore,
+  parseThreadRowFromRollout as parseThreadRowFromRolloutCore,
+  readRecentSessionIndexEntries as readRecentSessionIndexEntriesCore,
+  removeDatabaseSidecars as removeDatabaseSidecarsCore,
+  syncSharedThreadMetadata as syncSharedThreadMetadataCore,
+  toUnixTimestampSeconds as toUnixTimestampSecondsCore,
+} from "./_shared/thread-sync.mjs";
 
 installPromptCloseGuards();
 
-const VERSION = 1;
-const PROVIDER_MODE_COMPAT = "compat";
-const PROVIDER_MODE_STABLE_HTTP = "stable_http";
+const VERSION = 2;
 const PROVIDER_MODE_API111 = "api111";
-const DEFAULT_STABLE_HTTP_PROVIDER_ID = "sub2api";
 const DEFAULT_API111_PROVIDER_ID = "api111";
 
 function resolveManagerHome() {
@@ -80,13 +93,7 @@ const PROFILES_DIR = path.join(MANAGER_HOME, "profiles");
 const BACKUPS_DIR = path.join(MANAGER_HOME, "backups");
 const SCRIPTS_DIR = path.join(MANAGER_HOME, "scripts");
 const OFFICIAL_MANAGER_HOME = path.join(os.homedir(), ".codex-manager");
-const PLAIN_CODEX_BRIDGE_DIR = path.join(OFFICIAL_MANAGER_HOME, "plain-codex-bridge");
 const PLAIN_CODEX_MODE_STATE_PATH = path.join(OFFICIAL_MANAGER_HOME, "plain-codex-mode.json");
-const PLAIN_CODEX_BACKUP_AUTH_PATH = path.join(PLAIN_CODEX_BRIDGE_DIR, "official-auth.json");
-const PLAIN_CODEX_BACKUP_CONFIG_PATH = path.join(
-  PLAIN_CODEX_BRIDGE_DIR,
-  "official-config.toml",
-);
 const LAUNCHER_DIR = resolveLauncherDir();
 
 const DEFAULT_THIRD_PARTY_HOME = path.join(os.homedir(), ".codex-apikey");
@@ -95,24 +102,32 @@ const SHARED_SESSION_RELATIVE_PATHS = ["sessions", "archived_sessions"];
 const SHARED_SESSION_INDEX_FILE = "session_index.jsonl";
 const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
 const OFFICIAL_CLI_HOME = path.join(os.homedir(), ".codex-official");
-const OFFICIAL_AUTH_PATH = path.join(OFFICIAL_HOME, "auth.json");
-const OFFICIAL_CONFIG_PATH = path.join(OFFICIAL_HOME, "config.toml");
 const DEFAULT_PROVIDER = {
   command_name: "codex3",
   third_party_home: DEFAULT_THIRD_PARTY_HOME,
   shared_codex_home: DEFAULT_SHARED_CODEX_HOME,
-  mode: PROVIDER_MODE_COMPAT,
-  provider_name: "openai",
-  base_url: "https://sub.aimizy.com",
-  model: "gpt-5.4",
-  review_model: "gpt-5.4",
-  model_reasoning_effort: "xhigh",
-  preferred_auth_method: null,
+  mode: PROVIDER_MODE_API111,
+  provider_name: DEFAULT_API111_PROVIDER_ID,
+  base_url: "https://api.xcode.best/v1",
+  model: "gpt-5-codex",
+  review_model: null,
+  model_reasoning_effort: "high",
+  preferred_auth_method: "apikey",
   requires_openai_auth: null,
   supports_websockets: null,
   model_context_window: 1000000,
   model_auto_compact_token_limit: 900000,
 };
+const TUNING_KEYS = [
+  "model",
+  "review_model",
+  "model_reasoning_effort",
+  "model_context_window",
+  "model_auto_compact_token_limit",
+  "service_tier",
+  "model_verbosity",
+  "plan_mode_reasoning_effort",
+];
 
 const RUNTIME_DIR = fileURLToPath(new URL(".", import.meta.url));
 const REPO_WRAPPER_INSTALLER = path.resolve(
@@ -136,224 +151,28 @@ function getProviderEnvKey(commandName) {
   return `${normalizeEnvToken(commandName)}_OPENAI_API_KEY`;
 }
 
-const PLAIN_CODEX_MODE_OFFICIAL = "official";
-const PLAIN_CODEX_MODE_THIRD_PARTY = "third_party";
-
-function ensureDir(dirPath) {
-  fs.mkdirSync(dirPath, { recursive: true });
-}
-
-function writeJson(filePath, value) {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n", "utf8");
-}
-
-function writeText(filePath, content) {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, content, "utf8");
-}
-
-function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
-function readText(filePath) {
-  return fs.readFileSync(filePath, "utf8");
-}
-
-function pathExists(filePath) {
-  try {
-    return fs.existsSync(filePath);
-  } catch {
-    return false;
-  }
-}
-
 function readRecentSessionIndexEntries(homePath) {
-  const entries = [];
-  const filePath = path.join(homePath, "session_index.jsonl");
-  if (!pathExists(filePath)) {
-    return entries;
-  }
-
-  const text = readText(filePath);
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) {
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed?.id) {
-        entries.push(parsed);
-      }
-    } catch {
-      // ignore malformed recent-session index lines
-    }
-  }
-  return entries;
+  return readRecentSessionIndexEntriesCore(homePath);
 }
 
 function findRecentRolloutsById(sharedHome, wantedIds) {
-  const found = new Map();
-  const wanted = new Set(wantedIds.filter(Boolean));
-  if (!wanted.size) {
-    return found;
-  }
-
-  for (const bucketName of ["sessions", "archived_sessions"]) {
-    const root = path.join(sharedHome, bucketName);
-    if (!pathExists(root)) {
-      continue;
-    }
-
-    const stack = [root];
-    while (stack.length && found.size < wanted.size) {
-      const current = stack.pop();
-      const entries = fs.readdirSync(current, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(current, entry.name);
-        if (entry.isDirectory()) {
-          stack.push(fullPath);
-          continue;
-        }
-        if (!entry.isFile() || !/^rollout-.*\.jsonl$/i.test(entry.name)) {
-          continue;
-        }
-
-        const match = entry.name.match(
-          /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
-        );
-        const rolloutId = match?.[1];
-        if (!rolloutId || !wanted.has(rolloutId)) {
-          continue;
-        }
-
-        found.set(rolloutId, {
-          bucketName,
-          root,
-          fullPath,
-        });
-      }
-    }
-  }
-
-  return found;
+  return findRecentRolloutsByIdCore(sharedHome, wantedIds);
 }
 
 function toUnixTimestampSeconds(value) {
-  const parsed = Date.parse(value || "");
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-  return Math.floor(parsed / 1000);
-}
-
-function extractTextContent(content) {
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content
-    .filter((item) => item?.type === "input_text" || item?.type === "output_text")
-    .map((item) => String(item.text || ""))
-    .join("\n")
-    .trim();
-}
-
-function readRolloutPreviewText(rolloutPath, maxBytes = 256 * 1024) {
-  const handle = fs.openSync(rolloutPath, "r");
-  try {
-    const buffer = Buffer.alloc(maxBytes);
-    const bytesRead = fs.readSync(handle, buffer, 0, maxBytes, 0);
-    return buffer.toString("utf8", 0, bytesRead);
-  } finally {
-    fs.closeSync(handle);
-  }
+  return toUnixTimestampSecondsCore(value);
 }
 
 function copyDatabaseWithSidecars(sourceDbPath, destDbPath) {
-  fs.copyFileSync(sourceDbPath, destDbPath);
-  for (const suffix of ["-wal", "-shm"]) {
-    const sourceSidecar = `${sourceDbPath}${suffix}`;
-    if (pathExists(sourceSidecar)) {
-      fs.copyFileSync(sourceSidecar, `${destDbPath}${suffix}`);
-    }
-  }
+  return copyDatabaseWithSidecarsCore(sourceDbPath, destDbPath);
 }
 
 function removeDatabaseSidecars(dbPath) {
-  for (const suffix of ["-wal", "-shm"]) {
-    const sidecarPath = `${dbPath}${suffix}`;
-    if (pathExists(sidecarPath)) {
-      fs.rmSync(sidecarPath, { force: true });
-    }
-  }
+  return removeDatabaseSidecarsCore(dbPath);
 }
 
 function parseThreadRowFromRollout(rolloutPath, fallbackTitle) {
-  const text = readRolloutPreviewText(rolloutPath);
-  const lines = text.split(/\r?\n/);
-
-  let sessionMeta = null;
-  let turnContext = null;
-  let firstUserMessage = "";
-
-  for (const line of lines) {
-    if (!line.trim()) {
-      continue;
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    if (!sessionMeta && parsed.type === "session_meta") {
-      sessionMeta = parsed.payload || null;
-      continue;
-    }
-
-    if (!turnContext && parsed.type === "turn_context") {
-      turnContext = parsed.payload || null;
-      continue;
-    }
-
-    if (!firstUserMessage && parsed.type === "response_item" && parsed.payload?.role === "user") {
-      firstUserMessage = extractTextContent(parsed.payload.content);
-    }
-
-    if (sessionMeta && turnContext && firstUserMessage) {
-      break;
-    }
-  }
-
-  const createdAtIso = sessionMeta?.timestamp || null;
-  return {
-    id: sessionMeta?.id || null,
-    created_at: toUnixTimestampSeconds(createdAtIso),
-    updated_at: toUnixTimestampSeconds(createdAtIso),
-    source: String(sessionMeta?.source || "cli"),
-    model_provider: String(sessionMeta?.model_provider || ""),
-    cwd: String(sessionMeta?.cwd || turnContext?.cwd || ""),
-    title: fallbackTitle || firstUserMessage || sessionMeta?.id || path.basename(rolloutPath),
-    sandbox_policy: JSON.stringify(turnContext?.sandbox_policy || { type: "workspace-write" }),
-    approval_mode: String(turnContext?.approval_policy || "on-request"),
-    tokens_used: 0,
-    has_user_event: firstUserMessage ? 1 : 0,
-    archived: 0,
-    archived_at: null,
-    git_sha: sessionMeta?.git?.sha || null,
-    git_branch: sessionMeta?.git?.branch || null,
-    git_origin_url: sessionMeta?.git?.origin_url || null,
-    cli_version: String(sessionMeta?.cli_version || ""),
-    first_user_message: firstUserMessage || "",
-    agent_nickname: null,
-    agent_role: null,
-    memory_mode: String(turnContext?.memory_mode || "enabled"),
-    model: turnContext?.model || null,
-    reasoning_effort: turnContext?.effort || null,
-  };
+  return parseThreadRowFromRolloutCore(rolloutPath, fallbackTitle);
 }
 
 function buildRecentSharedThreadRows(sharedHome, targetHome) {
@@ -540,198 +359,15 @@ function syncManagedThreadMetadata(provider, { scope = "recent" } = {}) {
 }
 
 function readPlainCodexModeState() {
-  if (!pathExists(PLAIN_CODEX_MODE_STATE_PATH)) {
-    return null;
-  }
-  try {
-    const parsed = readJson(PLAIN_CODEX_MODE_STATE_PATH);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
+  return readPlainCodexModeStateFile(PLAIN_CODEX_MODE_STATE_PATH);
 }
 
 function getPlainCodexMode() {
-  const state = readPlainCodexModeState();
-  return state?.mode === PLAIN_CODEX_MODE_THIRD_PARTY
-    ? PLAIN_CODEX_MODE_THIRD_PARTY
-    : PLAIN_CODEX_MODE_OFFICIAL;
+  return getPlainCodexModeState(PLAIN_CODEX_MODE_STATE_PATH);
 }
 
 function setPlainCodexModeState(mode, extra = {}) {
-  ensureDir(PLAIN_CODEX_BRIDGE_DIR);
-  writeJson(PLAIN_CODEX_MODE_STATE_PATH, {
-    mode,
-    updated_at: new Date().toISOString(),
-    ...extra,
-  });
-}
-
-function capturePlainCodexOfficialBackupsIfNeeded() {
-  if (getPlainCodexMode() === PLAIN_CODEX_MODE_THIRD_PARTY) {
-    return;
-  }
-  ensureDir(PLAIN_CODEX_BRIDGE_DIR);
-  if (pathExists(OFFICIAL_AUTH_PATH)) {
-    fs.copyFileSync(OFFICIAL_AUTH_PATH, PLAIN_CODEX_BACKUP_AUTH_PATH);
-  }
-  if (pathExists(OFFICIAL_CONFIG_PATH)) {
-    fs.copyFileSync(OFFICIAL_CONFIG_PATH, PLAIN_CODEX_BACKUP_CONFIG_PATH);
-  }
-}
-
-function findFirstTomlTableHeaderIndex(lines) {
-  const index = lines.findIndex((line) => /^\s*\[.*\]\s*$/.test(line));
-  return index === -1 ? lines.length : index;
-}
-
-function stripTopLevelTomlEntries(text, keys) {
-  const keySet = new Set(keys);
-  const output = [];
-  let currentTable = null;
-
-  for (const rawLine of text.split(/\r?\n/)) {
-    const trimmed = rawLine.trim();
-    if (/^\s*\[.*\]\s*$/.test(rawLine)) {
-      currentTable = trimmed;
-      output.push(rawLine);
-      continue;
-    }
-    if (currentTable === null) {
-      const match = trimmed.match(/^([A-Za-z0-9_.-]+)\s*=/);
-      if (match && keySet.has(match[1])) {
-        continue;
-      }
-    }
-    output.push(rawLine);
-  }
-
-  return output.join("\n");
-}
-
-function writeManagedTopLevelTomlKeys(text, entries, commentLabel) {
-  const keys = Object.keys(entries);
-  const cleanedText = stripTopLevelTomlEntries(text, keys);
-  const lines = cleanedText ? cleanedText.split(/\r?\n/) : [];
-  const firstTableIndex = findFirstTomlTableHeaderIndex(lines);
-  const before = lines.slice(0, firstTableIndex);
-  const after = lines.slice(firstTableIndex);
-
-  while (before.length && !before[before.length - 1].trim()) {
-    before.pop();
-  }
-  while (after.length && !after[0].trim()) {
-    after.shift();
-  }
-
-  const managedBlock = [
-    commentLabel,
-    ...Object.entries(entries).map(([key, serializedValue]) => `${key} = ${serializedValue}`),
-  ];
-
-  const outputLines = [];
-  if (before.length) {
-    outputLines.push(...before, "");
-  }
-  outputLines.push(...managedBlock);
-  if (after.length) {
-    outputLines.push("", ...after);
-  }
-
-  return outputLines.join("\n").replace(/\n?$/, "\n");
-}
-
-function replaceTomlTable(text, tableName, entries, commentLabel) {
-  const tableHeader = `[${tableName}]`;
-  const lines = text ? text.split(/\r?\n/) : [];
-  let start = -1;
-  let end = lines.length;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const trimmed = lines[index].trim();
-    if (start === -1) {
-      if (trimmed === tableHeader) {
-        start = index;
-      }
-      continue;
-    }
-    if (/^\[.*\]$/.test(trimmed)) {
-      end = index;
-      break;
-    }
-  }
-
-  if (start !== -1) {
-    if (start > 0 && lines[start - 1].trim() === commentLabel) {
-      start -= 1;
-    }
-    lines.splice(start, end - start);
-  }
-
-  while (lines.length && !lines[lines.length - 1].trim()) {
-    lines.pop();
-  }
-  if (lines.length) {
-    lines.push("");
-  }
-
-  lines.push(commentLabel, tableHeader);
-  for (const [key, serializedValue] of Object.entries(entries)) {
-    lines.push(`${key} = ${serializedValue}`);
-  }
-  lines.push("");
-
-  return lines.join("\n").replace(/\n?$/, "\n");
-}
-
-function removeTomlTable(text, tableName, commentLabel) {
-  const tableHeader = `[${tableName}]`;
-  const lines = text ? text.split(/\r?\n/) : [];
-  let start = -1;
-  let end = lines.length;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const trimmed = lines[index].trim();
-    if (start === -1) {
-      if (trimmed === tableHeader) {
-        start = index;
-      }
-      continue;
-    }
-    if (/^\[.*\]$/.test(trimmed)) {
-      end = index;
-      break;
-    }
-  }
-
-  if (start !== -1) {
-    if (start > 0 && lines[start - 1].trim() === commentLabel) {
-      start -= 1;
-    }
-    lines.splice(start, end - start);
-  }
-
-  while (lines.length && !lines[lines.length - 1].trim()) {
-    lines.pop();
-  }
-
-  return lines.join("\n").replace(/\n?$/, "\n");
-}
-
-function dedupeManagedCommentLines(text, commentLabel) {
-  const lines = text.split(/\r?\n/);
-  const output = [];
-  for (const line of lines) {
-    if (
-      line.trim() === commentLabel &&
-      output.length > 0 &&
-      output[output.length - 1].trim() === commentLabel
-    ) {
-      continue;
-    }
-    output.push(line);
-  }
-  return output.join("\n").replace(/\n?$/, "\n");
+  writePlainCodexModeState(PLAIN_CODEX_MODE_STATE_PATH, mode, extra);
 }
 
 function isoNow() {
@@ -750,63 +386,24 @@ function backupFileIfExists(filePath, label) {
 }
 
 function normalizeProviderMode(value) {
-  const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
-  if (normalized === PROVIDER_MODE_STABLE_HTTP) {
-    return PROVIDER_MODE_STABLE_HTTP;
-  }
-  if (normalized === PROVIDER_MODE_API111) {
-    return PROVIDER_MODE_API111;
-  }
-  return PROVIDER_MODE_COMPAT;
+  return PROVIDER_MODE_API111;
 }
 
 function providerModeCliLabel(mode) {
-  const normalized = normalizeProviderMode(mode);
-  if (normalized === PROVIDER_MODE_STABLE_HTTP) {
-    return "stable-http";
-  }
-  if (normalized === PROVIDER_MODE_API111) {
-    return "api111";
-  }
-  return "compat";
+  return "api111";
 }
 
 function getModeDefaults(mode) {
-  switch (normalizeProviderMode(mode)) {
-    case PROVIDER_MODE_STABLE_HTTP:
-      return {
-        provider_name: DEFAULT_STABLE_HTTP_PROVIDER_ID,
-        base_url: "https://sub.aimizy.com",
-        model: "gpt-5.4",
-        review_model: "gpt-5.4",
-        model_reasoning_effort: "xhigh",
-        preferred_auth_method: null,
-        requires_openai_auth: true,
-        supports_websockets: false,
-      };
-    case PROVIDER_MODE_API111:
-      return {
-        provider_name: DEFAULT_API111_PROVIDER_ID,
-        base_url: "https://api.xcode.best/v1",
-        model: "gpt-5-codex",
-        review_model: null,
-        model_reasoning_effort: "high",
-        preferred_auth_method: "apikey",
-        requires_openai_auth: null,
-        supports_websockets: null,
-      };
-    default:
-      return {
-        provider_name: "openai",
-        base_url: "https://sub.aimizy.com",
-        model: "gpt-5.4",
-        review_model: "gpt-5.4",
-        model_reasoning_effort: "xhigh",
-        preferred_auth_method: null,
-        requires_openai_auth: null,
-        supports_websockets: null,
-      };
-  }
+  return {
+    provider_name: DEFAULT_API111_PROVIDER_ID,
+    base_url: "https://api.xcode.best/v1",
+    model: "gpt-5-codex",
+    review_model: null,
+    model_reasoning_effort: "high",
+    preferred_auth_method: "apikey",
+    requires_openai_auth: null,
+    supports_websockets: null,
+  };
 }
 
 function hasOwn(object, key) {
@@ -838,8 +435,29 @@ function normalizeOptionalBoolean(value) {
   return null;
 }
 
+function normalizeOptionalPositiveInteger(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function cloneWithoutKeys(object, keys) {
+  const next = {
+    ...(object || {}),
+  };
+  for (const key of keys) {
+    delete next[key];
+  }
+  return next;
+}
+
 function usesBuiltInOpenAiProvider(provider) {
-  return normalizeProviderMode(provider?.mode) === PROVIDER_MODE_COMPAT;
+  return false;
 }
 
 function effectiveOpenAiBaseUrl(provider) {
@@ -851,7 +469,7 @@ function effectiveOpenAiBaseUrl(provider) {
 }
 
 function normalizeProvider(provider = {}) {
-  const mode = normalizeProviderMode(provider.mode || DEFAULT_PROVIDER.mode);
+  const mode = PROVIDER_MODE_API111;
   const modeDefaults = getModeDefaults(mode);
   const commandName =
     String(provider.command_name || DEFAULT_PROVIDER.command_name).trim() ||
@@ -867,8 +485,7 @@ function normalizeProvider(provider = {}) {
     third_party_home: thirdPartyHome,
     shared_codex_home: sharedCodexHome,
     mode,
-    provider_name:
-      normalizeOptionalString(provider.provider_name) || modeDefaults.provider_name,
+    provider_name: modeDefaults.provider_name,
     base_url:
       (normalizeOptionalString(provider.base_url) || modeDefaults.base_url).replace(/\/+$/, ""),
     model:
@@ -880,18 +497,9 @@ function normalizeProvider(provider = {}) {
     model_reasoning_effort:
       normalizeOptionalString(provider.model_reasoning_effort) ||
       modeDefaults.model_reasoning_effort,
-    preferred_auth_method:
-      hasOwn(provider, "preferred_auth_method")
-        ? normalizeOptionalString(provider.preferred_auth_method)
-        : modeDefaults.preferred_auth_method,
-    requires_openai_auth:
-      hasOwn(provider, "requires_openai_auth")
-        ? normalizeOptionalBoolean(provider.requires_openai_auth)
-        : modeDefaults.requires_openai_auth,
-    supports_websockets:
-      hasOwn(provider, "supports_websockets")
-        ? normalizeOptionalBoolean(provider.supports_websockets)
-        : modeDefaults.supports_websockets,
+    preferred_auth_method: modeDefaults.preferred_auth_method,
+    requires_openai_auth: modeDefaults.requires_openai_auth,
+    supports_websockets: modeDefaults.supports_websockets,
     model_context_window:
       Number.isFinite(Number(provider.model_context_window))
         ? Number(provider.model_context_window)
@@ -901,6 +509,67 @@ function normalizeProvider(provider = {}) {
         ? Number(provider.model_auto_compact_token_limit)
         : DEFAULT_PROVIDER.model_auto_compact_token_limit,
   };
+}
+
+function normalizeLaneTuning(tuning = {}, legacyProvider = {}) {
+  const source = tuning && typeof tuning === "object" ? tuning : {};
+  const legacy = legacyProvider && typeof legacyProvider === "object" ? legacyProvider : {};
+  const normalized = {};
+
+  function pickValue(key, normalizer) {
+    if (hasOwn(source, key)) {
+      normalized[key] = normalizer(source[key]);
+      return;
+    }
+    if (hasOwn(legacy, key)) {
+      normalized[key] = normalizer(legacy[key]);
+    }
+  }
+
+  pickValue("model", normalizeOptionalString);
+  pickValue("review_model", normalizeOptionalString);
+  pickValue("model_reasoning_effort", normalizeOptionalString);
+  pickValue("model_context_window", normalizeOptionalPositiveInteger);
+  pickValue("model_auto_compact_token_limit", normalizeOptionalPositiveInteger);
+  pickValue("service_tier", normalizeOptionalString);
+  pickValue("model_verbosity", normalizeOptionalString);
+  pickValue("plan_mode_reasoning_effort", normalizeOptionalString);
+
+  return normalized;
+}
+
+function resolveProvider(provider = {}, tuning = {}) {
+  const normalizedProvider = normalizeProvider(provider);
+  const normalizedTuning = normalizeLaneTuning(tuning, provider);
+  return {
+    ...normalizedProvider,
+    model: normalizeOptionalString(normalizedTuning.model) || normalizedProvider.model,
+    review_model: hasOwn(normalizedTuning, "review_model")
+      ? normalizedTuning.review_model
+      : normalizedProvider.review_model,
+    model_reasoning_effort:
+      normalizeOptionalString(normalizedTuning.model_reasoning_effort) ||
+      normalizedProvider.model_reasoning_effort,
+    model_context_window:
+      normalizeOptionalPositiveInteger(normalizedTuning.model_context_window) ||
+      normalizedProvider.model_context_window,
+    model_auto_compact_token_limit:
+      normalizeOptionalPositiveInteger(normalizedTuning.model_auto_compact_token_limit) ||
+      normalizedProvider.model_auto_compact_token_limit,
+    service_tier: hasOwn(normalizedTuning, "service_tier")
+      ? normalizedTuning.service_tier
+      : null,
+    model_verbosity: hasOwn(normalizedTuning, "model_verbosity")
+      ? normalizedTuning.model_verbosity
+      : null,
+    plan_mode_reasoning_effort: hasOwn(normalizedTuning, "plan_mode_reasoning_effort")
+      ? normalizedTuning.plan_mode_reasoning_effort
+      : null,
+  };
+}
+
+function resolveProviderFromState(state) {
+  return resolveProvider(state?.provider || DEFAULT_PROVIDER, state?.tuning || {});
 }
 
 function profileDir(profileId) {
@@ -933,17 +602,6 @@ function sharedSessionLinkPath(provider, relativePath) {
 
 function sharedSessionTargetPath(provider, relativePath) {
   return path.join(provider.shared_codex_home, relativePath);
-}
-
-function safeRealPath(filePath) {
-  try {
-    if (typeof fs.realpathSync.native === "function") {
-      return fs.realpathSync.native(filePath);
-    }
-    return fs.realpathSync(filePath);
-  } catch {
-    return null;
-  }
 }
 
 function pathResolvesTo(filePath, targetPath) {
@@ -982,6 +640,7 @@ function loadState() {
     const state = {
       schema_version: VERSION,
       provider: normalizeProvider(DEFAULT_PROVIDER),
+      tuning: {},
       profiles: {},
       active_profile_id: null,
     };
@@ -999,7 +658,19 @@ function loadState() {
     state.profiles = {};
     changed = true;
   }
-  state.provider = normalizeProvider(state.provider || DEFAULT_PROVIDER);
+  const rawProvider = state.provider || DEFAULT_PROVIDER;
+  const rawTuning = state.tuning || {};
+  const cleanedProvider = cloneWithoutKeys(rawProvider, TUNING_KEYS);
+  const normalizedProvider = normalizeProvider(cleanedProvider);
+  const normalizedTuning = normalizeLaneTuning(rawTuning, rawProvider);
+  if (JSON.stringify(cleanedProvider) !== JSON.stringify(rawProvider)) {
+    changed = true;
+  }
+  if (!state.tuning || JSON.stringify(state.tuning) !== JSON.stringify(normalizedTuning)) {
+    changed = true;
+  }
+  state.provider = normalizedProvider;
+  state.tuning = normalizedTuning;
   if (!("active_profile_id" in state)) {
     state.active_profile_id = null;
     changed = true;
@@ -1080,7 +751,6 @@ function buildAuthData(apiKey) {
     throw new Error("API key is required.");
   }
   return {
-    auth_mode: "apikey",
     OPENAI_API_KEY: trimmed,
   };
 }
@@ -1140,7 +810,7 @@ function saveProfileAuth(profileId, authData) {
 }
 
 function writeThirdPartyConfig(provider) {
-  const lines = ['cli_auth_credentials_store = "file"'];
+  const lines = [];
 
   if (usesBuiltInOpenAiProvider(provider)) {
     lines.push(
@@ -1156,15 +826,26 @@ function writeThirdPartyConfig(provider) {
     lines.push(`review_model = "${provider.review_model}"`);
   }
   lines.push(`model_reasoning_effort = "${provider.model_reasoning_effort}"`);
+  lines.push('cli_auth_credentials_store = "file"');
   lines.push("disable_response_storage = true");
   if (provider.preferred_auth_method) {
     lines.push(`preferred_auth_method = "${provider.preferred_auth_method}"`);
   }
-  lines.push('network_access = "enabled"');
-  lines.push("windows_wsl_setup_acknowledged = true");
-  lines.push(`model_context_window = ${provider.model_context_window}`);
-  lines.push(`model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`);
-
+  if (provider.service_tier) {
+    lines.push(`service_tier = "${provider.service_tier}"`);
+  }
+  if (provider.model_verbosity) {
+    lines.push(`model_verbosity = "${provider.model_verbosity}"`);
+  }
+  if (provider.plan_mode_reasoning_effort) {
+    lines.push(`plan_mode_reasoning_effort = "${provider.plan_mode_reasoning_effort}"`);
+  }
+  if (provider.model_context_window) {
+    lines.push(`model_context_window = ${provider.model_context_window}`);
+  }
+  if (provider.model_auto_compact_token_limit) {
+    lines.push(`model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`);
+  }
   if (!usesBuiltInOpenAiProvider(provider)) {
     lines.push("");
     lines.push(`[model_providers.${provider.provider_name}]`);
@@ -1179,94 +860,12 @@ function writeThirdPartyConfig(provider) {
     }
   }
 
-  lines.push("", "[features]", "apps = false", "");
+  lines.push("");
   const text = lines.join("\n");
 
   ensureDir(provider.third_party_home);
   backupFileIfExists(thirdPartyConfigPath(provider), "codex3-config.toml.bak");
   writeText(thirdPartyConfigPath(provider), text);
-}
-
-function buildPlainCodexThirdPartyTopLevelEntries(provider) {
-  const entries = {
-    cli_auth_credentials_store: '"file"',
-    model_provider: JSON.stringify(provider.provider_name),
-    model: JSON.stringify(provider.model),
-    model_reasoning_effort: JSON.stringify(provider.model_reasoning_effort),
-    disable_response_storage: "true",
-    network_access: '"enabled"',
-    windows_wsl_setup_acknowledged: "true",
-    model_context_window: String(provider.model_context_window),
-    model_auto_compact_token_limit: String(provider.model_auto_compact_token_limit),
-  };
-  if (provider.review_model) {
-    entries.review_model = JSON.stringify(provider.review_model);
-  }
-  if (provider.preferred_auth_method) {
-    entries.preferred_auth_method = JSON.stringify(provider.preferred_auth_method);
-  }
-  if (usesBuiltInOpenAiProvider(provider)) {
-    entries.openai_base_url = JSON.stringify(effectiveOpenAiBaseUrl(provider));
-  }
-  return entries;
-}
-
-function buildPlainCodexThirdPartyProviderTableEntries(provider) {
-  if (usesBuiltInOpenAiProvider(provider)) {
-    return null;
-  }
-  const entries = {
-    name: JSON.stringify(provider.provider_name),
-    base_url: JSON.stringify(provider.base_url),
-    wire_api: JSON.stringify("responses"),
-  };
-  if (provider.requires_openai_auth != null) {
-    entries.requires_openai_auth = provider.requires_openai_auth ? "true" : "false";
-  }
-  if (provider.supports_websockets != null) {
-    entries.supports_websockets = provider.supports_websockets ? "true" : "false";
-  }
-  return entries;
-}
-
-function applyPlainCodexThirdPartyBridge(provider) {
-  ensureDir(OFFICIAL_HOME);
-  const commentLabel = "# codex3_m managed codex.exe bridge";
-  let configText = pathExists(OFFICIAL_CONFIG_PATH) ? readText(OFFICIAL_CONFIG_PATH) : "";
-  configText = writeManagedTopLevelTomlKeys(
-    configText,
-    buildPlainCodexThirdPartyTopLevelEntries(provider),
-    commentLabel,
-  );
-  const providerTableEntries = buildPlainCodexThirdPartyProviderTableEntries(provider);
-  for (const tableName of [
-    "model_providers.OpenAI",
-    `model_providers.${DEFAULT_STABLE_HTTP_PROVIDER_ID}`,
-    `model_providers.${DEFAULT_API111_PROVIDER_ID}`,
-  ]) {
-    if (!providerTableEntries || tableName !== `model_providers.${provider.provider_name}`) {
-      configText = removeTomlTable(configText, tableName, commentLabel);
-    }
-  }
-  if (providerTableEntries) {
-    configText = replaceTomlTable(
-      configText,
-      `model_providers.${provider.provider_name}`,
-      providerTableEntries,
-      commentLabel,
-    );
-  }
-  configText = dedupeManagedCommentLines(configText, commentLabel);
-  writeText(OFFICIAL_CONFIG_PATH, configText);
-}
-
-function copyThirdPartyAuthToOfficial(provider) {
-  const source = thirdPartyAuthPath(provider);
-  if (!pathExists(source)) {
-    throw new Error(`Third-party auth is missing at ${source}`);
-  }
-  ensureDir(OFFICIAL_HOME);
-  fs.copyFileSync(source, OFFICIAL_AUTH_PATH);
 }
 
 function assertPlainCodexLauncherUsesOfficialCliHome() {
@@ -1370,6 +969,15 @@ function runWrapperInstaller(provider) {
   if (provider.supports_websockets != null) {
     args.push("-SupportsWebsockets", String(provider.supports_websockets));
   }
+  if (provider.service_tier) {
+    args.push("-ServiceTier", provider.service_tier);
+  }
+  if (provider.model_verbosity) {
+    args.push("-ModelVerbosity", provider.model_verbosity);
+  }
+  if (provider.plan_mode_reasoning_effort) {
+    args.push("-PlanModeReasoningEffort", provider.plan_mode_reasoning_effort);
+  }
 
   const result = spawnSync("powershell", args, {
     encoding: "utf8",
@@ -1391,58 +999,24 @@ function deleteThirdPartyAuthIfPresent(provider) {
 }
 
 function detectRunningCodexProcesses() {
-  if (process.platform !== "win32") {
-    return [];
-  }
-
-  const psScript = `
-$me = ${process.pid};
-$items = Get-CimInstance Win32_Process |
-  Where-Object {
-    $_.ProcessId -ne $me -and
-    $_.CommandLine -and (
-      $_.CommandLine -match '(?i)AppData\\\\Roaming\\\\npm\\\\node_modules\\\\@openai\\\\codex' -or
-      $_.CommandLine -match '(?i)codex-win32-x64'
-    ) -and
-    $_.CommandLine -notmatch '(?i)codex3-manager'
-  } |
-  Select-Object ProcessId, Name, CommandLine;
-$items | ConvertTo-Json -Compress
-`;
-
-  const result = spawnSync("powershell", ["-NoProfile", "-Command", psScript], {
-    encoding: "utf8",
-    windowsHide: true,
+  return detectRunningCodexProcessesCore({
+    excludePattern: "(?i)codex3-manager",
   });
-
-  if (result.status !== 0 || !result.stdout.trim()) {
-    return [];
-  }
-
-  const parsed = JSON.parse(result.stdout.trim());
-  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 function formatProcessSummary(processes) {
-  if (!processes.length) {
-    return "none";
-  }
-  return processes.map((item) => `${item.Name}(${item.ProcessId})`).join(", ");
+  return formatProcessSummaryCore(processes);
 }
 
 function assertNoRunningCodexProcesses() {
-  const processes = detectRunningCodexProcesses();
-  if (!processes.length) {
-    return;
-  }
-  throw new Error(
-    `Running Codex CLI process detected: ${formatProcessSummary(processes)}. Close it first or rerun with --force.`,
-  );
+  return assertNoRunningCodexProcessesCore({
+    excludePattern: "(?i)codex3-manager",
+  });
 }
 
 async function activateProfile(state, profileId, { silent = false, skipProcessCheck = false } = {}) {
   const profile = requireProfile(state, profileId);
-  const provider = normalizeProvider(state.provider);
+  const provider = resolveProviderFromState(state);
   const source = profileAuthPath(profile.profile_id);
   if (!fs.existsSync(source)) {
     throw new Error(`Saved auth is missing for profile ${profile.profile_id}`);
@@ -1484,7 +1058,7 @@ async function setPlainCodexThirdPartyMode(
   state,
   { silent = false, skipProcessCheck = false } = {},
 ) {
-  const provider = normalizeProvider(state.provider);
+  const provider = resolveProviderFromState(state);
   const activeProfileId = state.active_profile_id;
   if (!activeProfileId) {
     throw new Error(
@@ -1499,9 +1073,11 @@ async function setPlainCodexThirdPartyMode(
   assertPlainCodexLauncherUsesOfficialCliHome();
 
   await activateProfile(state, activeProfileId, { silent: true, skipProcessCheck: true });
-  capturePlainCodexOfficialBackupsIfNeeded();
-  copyThirdPartyAuthToOfficial(provider);
-  applyPlainCodexThirdPartyBridge(provider);
+  syncDesktopHomeFromSource({
+    sourceHome: provider.third_party_home,
+    desktopHome: OFFICIAL_HOME,
+    label: `${provider.command_name} third-party home`,
+  });
 
   setPlainCodexModeState(PLAIN_CODEX_MODE_THIRD_PARTY, {
     source: MANAGER_COMMAND_NAME,
@@ -1547,7 +1123,7 @@ async function deleteProfile(state, profileId, { silent = false, skipProcessChec
       });
     } else {
       state.active_profile_id = null;
-      deleteThirdPartyAuthIfPresent(normalizeProvider(state.provider));
+      deleteThirdPartyAuthIfPresent(resolveProviderFromState(state));
       saveState(state);
     }
   } else {
@@ -1570,7 +1146,7 @@ function renameProfileAlias(state, profileId, alias) {
 function doctorReport(state) {
   const issues = [];
   const warnings = [];
-  const provider = normalizeProvider(state.provider);
+  const provider = resolveProviderFromState(state);
   const wrapperPs1Path = path.join(LAUNCHER_DIR, `${provider.command_name}.ps1`);
   const wrapperCmdPath = path.join(LAUNCHER_DIR, `${provider.command_name}.cmd`);
 
@@ -1696,6 +1272,17 @@ function doctorReport(state) {
     if (provider.preferred_auth_method) {
       requiredSnippets.push(`preferred_auth_method = "${provider.preferred_auth_method}"`);
     }
+    if (provider.service_tier) {
+      requiredSnippets.push(`service_tier = "${provider.service_tier}"`);
+    }
+    if (provider.model_verbosity) {
+      requiredSnippets.push(`model_verbosity = "${provider.model_verbosity}"`);
+    }
+    if (provider.plan_mode_reasoning_effort) {
+      requiredSnippets.push(
+        `plan_mode_reasoning_effort = "${provider.plan_mode_reasoning_effort}"`,
+      );
+    }
     if (!usesBuiltInOpenAiProvider(provider) && provider.requires_openai_auth != null) {
       requiredSnippets.push(
         `requires_openai_auth = ${provider.requires_openai_auth ? "true" : "false"}`,
@@ -1732,53 +1319,28 @@ function doctorReport(state) {
 }
 
 async function promptLine(question) {
-  const rl = readlinePromises.createInterface({ input, output });
-  try {
-    const answer = await rl.question(question);
-    return answer.trim();
-  } finally {
-    rl.close();
-  }
+  return promptLineCore(question);
 }
 
 async function promptRequired(question, errorLabel) {
-  const value = await promptLine(question);
-  if (!value) {
-    throw new Error(errorLabel);
-  }
-  return value;
+  return promptRequiredCore(question, errorLabel);
 }
 
 async function promptYesNo(question, defaultValue = false) {
-  const suffix = defaultValue ? " [Y/n] " : " [y/N] ";
-  const answer = (await promptLine(question + suffix)).toLowerCase();
-  if (!answer) {
-    return defaultValue;
-  }
-  if (answer === "y" || answer === "yes") {
-    return true;
-  }
-  if (answer === "n" || answer === "no") {
-    return false;
-  }
-  throw new Error("Please answer yes or no.");
+  return promptYesNoCore(question, defaultValue);
 }
 
 async function runPrompt(prompt) {
-  try {
-    return await prompt.run();
-  } catch {
-    return null;
-  }
+  return runPromptCore(prompt);
 }
 
 function getSummaryLines(state) {
-  const provider = normalizeProvider(state.provider);
+  const provider = resolveProviderFromState(state);
   const activeProfile = state.active_profile_id ? state.profiles[state.active_profile_id] : null;
   return [
     MANAGER_COMMAND_NAME,
     `Command: ${provider.command_name}`,
-    `Mode: ${providerModeCliLabel(provider.mode)}`,
+    "Lane: api111",
     `Provider: ${provider.provider_name} | ${provider.base_url}`,
     `Model: ${provider.model} | review ${provider.review_model || "(none)"}`,
     `Active profile: ${activeProfile ? `${activeProfile.alias} | ${readSavedProfileMaskedKey(activeProfile.profile_id)}` : "(none)"}`,
@@ -1822,43 +1384,15 @@ async function selectChoice({
 }
 
 async function promptInputPrompt(message, initial = "") {
-  const value = await runPrompt(
-    new Input({
-      name: "value",
-      message,
-      initial,
-    }),
-  );
-  if (value == null) {
-    return null;
-  }
-  const trimmed = String(value).trim();
-  return trimmed || null;
+  return promptInputPromptCore(message, initial);
 }
 
 async function promptConfirmPrompt(message, initial = false) {
-  const value = await runPrompt(
-    new Confirm({
-      name: "value",
-      message,
-      initial,
-    }),
-  );
-  return value === true;
+  return promptConfirmPromptCore(message, initial);
 }
 
 async function promptSecretPrompt(message) {
-  const value = await runPrompt(
-    new Password({
-      name: "value",
-      message,
-    }),
-  );
-  if (value == null) {
-    return null;
-  }
-  const trimmed = String(value).trim();
-  return trimmed || null;
+  return promptSecretPromptCore(message);
 }
 
 function parseOptionValue(args, index, flag) {
@@ -1870,7 +1404,7 @@ function parseOptionValue(args, index, flag) {
 }
 
 async function probeProvider(state, { model = null } = {}) {
-  const provider = normalizeProvider(state.provider);
+  const provider = resolveProviderFromState(state);
   const authPath = thirdPartyAuthPath(provider);
   if (!fs.existsSync(authPath)) {
     throw new Error(`Third-party auth.json is missing at ${authPath}`);
@@ -1986,7 +1520,7 @@ async function promptApiKeyValue(providedValue = null) {
 async function maybeActivateProfile(state, profileId, options = {}) {
   const shouldActivate =
     options.activateNow == null
-      ? await promptYesNo(`Activate this third-party profile for ${normalizeProvider(state.provider).command_name} now?`, true)
+      ? await promptYesNo(`Activate this third-party profile for ${resolveProviderFromState(state).command_name} now?`, true)
       : options.activateNow;
 
   if (!shouldActivate) {
@@ -2023,7 +1557,7 @@ async function interactiveResolveForce(actionLabel) {
 
 async function interactiveMaybeActivateProfile(state, profileId) {
   const shouldActivate = await promptConfirmPrompt(
-    `Use this third-party API key profile for ${normalizeProvider(state.provider).command_name} now?`,
+    `Use this third-party API key profile for ${resolveProviderFromState(state).command_name} now?`,
     true,
   );
   if (!shouldActivate) {
@@ -2095,9 +1629,11 @@ function printJson(value) {
 }
 
 function summarizeState(state) {
-  const provider = normalizeProvider(state.provider);
+  const provider = resolveProviderFromState(state);
   return {
     provider,
+    preset: state.provider,
+    tuning: normalizeLaneTuning(state.tuning, state.provider),
     active_profile_id: state.active_profile_id,
     profiles: getProfiles(state).map((profile) => ({
       profile_id: profile.profile_id,
@@ -2129,11 +1665,12 @@ function printProfileSummary(state) {
 }
 
 function printOverview(state) {
-  const provider = normalizeProvider(state.provider);
+  const provider = resolveProviderFromState(state);
   const plainCodexMode = getPlainCodexMode();
   console.log(MANAGER_COMMAND_NAME);
   console.log("");
   console.log(`Command: ${provider.command_name}`);
+  console.log("Lane: api111");
   console.log(`Third-party home: ${provider.third_party_home}`);
   console.log(`Shared Codex home: ${provider.shared_codex_home}`);
   console.log(`Provider: ${provider.provider_name} | ${provider.base_url}`);
@@ -2154,11 +1691,35 @@ function printOverview(state) {
   console.log(`  ${MANAGER_COMMAND_NAME} delete <profile-id> [--force]`);
   console.log(`  ${MANAGER_COMMAND_NAME} use-codex3 [--force]`);
   console.log(`  ${MANAGER_COMMAND_NAME} sync-threads [--all] [--force]`);
-  console.log(`  ${MANAGER_COMMAND_NAME} mode show`);
-  console.log(`  ${MANAGER_COMMAND_NAME} mode set <compat|stable-http|api111>`);
-  console.log(`  ${MANAGER_COMMAND_NAME} provider show`);
-  console.log(`  ${MANAGER_COMMAND_NAME} provider set`);
+  console.log(`  ${MANAGER_COMMAND_NAME} config show`);
+  console.log(`  ${MANAGER_COMMAND_NAME} config set`);
   console.log(`  ${MANAGER_COMMAND_NAME} doctor`);
+}
+
+function formatDisplayValue(value, emptyLabel = "(none)") {
+  if (value == null || value === "") {
+    return emptyLabel;
+  }
+  return String(value);
+}
+
+function getTuningSourceLabel(state, key) {
+  const tuning = normalizeLaneTuning(state.tuning, state.provider);
+  return hasOwn(tuning, key) ? "override" : "preset";
+}
+
+async function applyResolvedProviderState(state) {
+  const provider = resolveProviderFromState(state);
+  saveState(state);
+  writeThirdPartyConfig(provider);
+  runWrapperInstaller(provider);
+  if (state.active_profile_id) {
+    await activateProfile(state, state.active_profile_id, {
+      silent: true,
+      skipProcessCheck: true,
+    });
+  }
+  return provider;
 }
 
 function buildManageChoices(state) {
@@ -2278,31 +1839,31 @@ async function runManagePage() {
 async function runProviderPage() {
   while (true) {
     const state = loadState();
-    const provider = normalizeProvider(state.provider);
+    const provider = resolveProviderFromState(state);
     const choice = await selectChoice({
-      title: "Provider (Advanced)",
-      description: `Inspect or update the third-party provider settings and shared session home used by ${provider.command_name}. Saved API key profiles remain the primary identity model.`,
+      title: "Config",
+      description: `Adjust the single api111 lane used by ${provider.command_name}. Saved API key profiles remain the primary identity model.`,
       state,
       choices: [
         {
           name: "show",
-          message: "Show current provider settings",
+          message: "Show current config",
           hint: `${provider.provider_name} | ${provider.base_url}`,
         },
         {
-          name: "mode",
-          message: "Switch provider mode",
-          hint:
-            providerModeCliLabel(provider.mode) === "compat"
-              ? "compat | better recent-session visibility"
-              : providerModeCliLabel(provider.mode) === "stable-http"
-                ? "stable-http | disable websocket path"
-                : "api111 | tutorial-matched custom provider",
+          name: "paths",
+          message: "Edit command and paths",
+          hint: `${provider.command_name} | ${provider.third_party_home}`,
         },
         {
-          name: "set",
-          message: "Edit provider settings",
-          hint: `${provider.command_name} | ${provider.model}`,
+          name: "model",
+          message: "Edit model settings",
+          hint: `${provider.model} | ${provider.model_reasoning_effort}`,
+        },
+        {
+          name: "doctor",
+          message: "Run doctor",
+          hint: "check wrapper, auth, and shared state wiring",
         },
         {
           name: "reinstall",
@@ -2322,62 +1883,28 @@ async function runProviderPage() {
 
     if (choice === "show") {
       await selectChoice({
-        title: "Advanced Provider Settings",
+        title: "Current Config",
         description: "Esc returns.",
         state,
         choices: [
           { name: "command", message: `Command: ${provider.command_name}`, hint: "wrapper command" },
-          { name: "mode", message: `Mode: ${providerModeCliLabel(provider.mode)}`, hint: "compat or stable-http" },
+          { name: "lane", message: "Lane: api111", hint: "single supported third-party config shape" },
           { name: "home", message: `Third-party home: ${provider.third_party_home}`, hint: "stores third-party auth and provider mirror config" },
           { name: "shared_home", message: `Shared Codex home: ${provider.shared_codex_home}`, hint: "sessions, archived_sessions, and session_index.jsonl are shared from here" },
-          { name: "provider", message: `Provider: ${provider.provider_name}`, hint: "derived from mode" },
-          { name: "url", message: `Base URL: ${provider.base_url}`, hint: "OpenAI-compatible endpoint" },
-          { name: "model", message: `Model: ${provider.model}`, hint: "default model" },
-          { name: "review_model", message: `Review model: ${provider.review_model || "(none)"}`, hint: "tutorial review_model" },
-          { name: "auth_method", message: `Preferred auth method: ${provider.preferred_auth_method || "(none)"}`, hint: "tutorial preferred_auth_method" },
-          { name: "effort", message: `Reasoning effort: ${provider.model_reasoning_effort}`, hint: "tutorial model_reasoning_effort" },
-          { name: "window", message: `Context window: ${provider.model_context_window}`, hint: "tutorial model_context_window" },
-          { name: "compact", message: `Auto compact limit: ${provider.model_auto_compact_token_limit}`, hint: "tutorial model_auto_compact_token_limit" },
+          { name: "provider", message: `Provider: ${provider.provider_name}`, hint: "fixed provider id for the api111 lane" },
+          { name: "url", message: `Base URL: ${provider.base_url}`, hint: "protocol endpoint" },
+          { name: "auth_method", message: `Preferred auth method: ${provider.preferred_auth_method || "(none)"}`, hint: "kept on apikey for file-backed auth" },
+          { name: "model", message: `Model: ${provider.model}`, hint: getTuningSourceLabel(state, "model") },
+          { name: "review_model", message: `Review model: ${provider.review_model || "(none)"}`, hint: getTuningSourceLabel(state, "review_model") },
+          { name: "effort", message: `Reasoning effort: ${provider.model_reasoning_effort}`, hint: getTuningSourceLabel(state, "model_reasoning_effort") },
+          { name: "service_tier", message: `Service tier: ${formatDisplayValue(provider.service_tier)}`, hint: getTuningSourceLabel(state, "service_tier") },
+          { name: "verbosity", message: `Model verbosity: ${formatDisplayValue(provider.model_verbosity)}`, hint: getTuningSourceLabel(state, "model_verbosity") },
+          { name: "plan_effort", message: `Plan mode effort: ${formatDisplayValue(provider.plan_mode_reasoning_effort)}`, hint: getTuningSourceLabel(state, "plan_mode_reasoning_effort") },
+          { name: "window", message: `Context window: ${provider.model_context_window}`, hint: getTuningSourceLabel(state, "model_context_window") },
+          { name: "compact", message: `Auto compact limit: ${provider.model_auto_compact_token_limit}`, hint: getTuningSourceLabel(state, "model_auto_compact_token_limit") },
           { name: "back", message: "Back" },
         ],
       });
-      continue;
-    }
-
-    if (choice === "mode") {
-      const modeChoice = await selectChoice({
-        title: "Provider Mode",
-        description:
-          "Choose the provider shape written into the third-party config and wrapper overrides. Compat aligns with openai for visibility, stable-http disables websocket routing, and api111 matches the newer tutorial.",
-        state,
-        choices: [
-          {
-            name: PROVIDER_MODE_COMPAT,
-            message: "compat",
-            hint: "best session visibility with official recent sessions, but some gateways reconnect",
-          },
-          {
-            name: PROVIDER_MODE_STABLE_HTTP,
-            message: "stable-http",
-            hint: "better speed and stability on some third-party gateways, but session lists split by provider id",
-          },
-          {
-            name: PROVIDER_MODE_API111,
-            message: "api111",
-            hint: "matches the newer tutorial shape with provider id api111 and preferred_auth_method=apikey",
-          },
-          {
-            name: "back",
-            message: "Back",
-          },
-        ],
-      });
-
-      if (!modeChoice || modeChoice === "back") {
-        continue;
-      }
-
-      await handleProviderSet(["--mode", modeChoice]);
       continue;
     }
 
@@ -2388,55 +1915,81 @@ async function runProviderPage() {
       continue;
     }
 
-    const commandName =
-      (await promptInputPrompt("Wrapper command name:", provider.command_name)) ||
-      provider.command_name;
-    const thirdPartyHome =
-      (await promptInputPrompt("Third-party auth home:", provider.third_party_home)) ||
-      provider.third_party_home;
-    const sharedCodexHome =
-      (await promptInputPrompt("Shared Codex home:", provider.shared_codex_home)) ||
-      provider.shared_codex_home;
-    const baseUrl = (await promptInputPrompt("Base URL:", provider.base_url)) || provider.base_url;
-    const model = (await promptInputPrompt("Model:", provider.model)) || provider.model;
-    const reviewModel =
-      (await promptInputPrompt("Review model:", provider.review_model || "")) || provider.review_model;
-    const reasoningEffort =
-      (await promptInputPrompt("Model reasoning effort:", provider.model_reasoning_effort)) ||
-      provider.model_reasoning_effort;
-    const contextWindow =
-      (await promptInputPrompt(
-        "Model context window:",
-        String(provider.model_context_window),
-      )) || String(provider.model_context_window);
-    const autoCompactTokenLimit =
-      (await promptInputPrompt(
-        "Model auto compact token limit:",
-        String(provider.model_auto_compact_token_limit),
-      )) || String(provider.model_auto_compact_token_limit);
+    if (choice === "doctor") {
+      await handleDoctor(state);
+      continue;
+    }
 
-    await handleProviderSet([
-      "--command-name",
-      commandName,
-      "--mode",
-      providerModeCliLabel(provider.mode),
-      "--third-party-home",
-      thirdPartyHome,
-      "--shared-codex-home",
-      sharedCodexHome,
-      "--base-url",
-      baseUrl,
-      "--model",
-      model,
-      "--review-model",
-      reviewModel,
-      "--model-reasoning-effort",
-      reasoningEffort,
-      "--model-context-window",
-      contextWindow,
-      "--model-auto-compact-token-limit",
-      autoCompactTokenLimit,
-    ]);
+    if (choice === "paths") {
+      const commandName =
+        (await promptInputPrompt("Wrapper command name:", provider.command_name)) ||
+        provider.command_name;
+      const thirdPartyHome =
+        (await promptInputPrompt("Third-party auth home:", provider.third_party_home)) ||
+        provider.third_party_home;
+      const sharedCodexHome =
+        (await promptInputPrompt("Shared Codex home:", provider.shared_codex_home)) ||
+        provider.shared_codex_home;
+      const baseUrl = (await promptInputPrompt("Base URL:", provider.base_url)) || provider.base_url;
+
+      await handleProviderSet([
+        "--command-name",
+        commandName,
+        "--third-party-home",
+        thirdPartyHome,
+        "--shared-codex-home",
+        sharedCodexHome,
+        "--base-url",
+        baseUrl,
+      ]);
+      continue;
+    }
+
+    if (choice === "model_reset") {
+      await handleTuningReset();
+      continue;
+    }
+
+    const tuningArgs = [];
+    const model = await promptInputPrompt("Model:", provider.model);
+    if (model) {
+      tuningArgs.push("--model", model);
+    }
+    const reviewModel = await promptInputPrompt(
+      "Review model:",
+      formatDisplayValue(provider.review_model, ""),
+    );
+    if (reviewModel) {
+      tuningArgs.push("--review-model", reviewModel);
+    }
+    const reasoningEffort = await promptInputPrompt(
+      "Model reasoning effort:",
+      provider.model_reasoning_effort,
+    );
+    if (reasoningEffort) {
+      tuningArgs.push("--model-reasoning-effort", reasoningEffort);
+    }
+    const contextWindow = await promptInputPrompt(
+      "Model context window:",
+      String(provider.model_context_window),
+    );
+    if (contextWindow) {
+      tuningArgs.push("--model-context-window", contextWindow);
+    }
+    const autoCompactTokenLimit = await promptInputPrompt(
+      "Model auto compact token limit:",
+      String(provider.model_auto_compact_token_limit),
+    );
+    if (autoCompactTokenLimit) {
+      tuningArgs.push("--model-auto-compact-token-limit", autoCompactTokenLimit);
+    }
+
+    if (!tuningArgs.length) {
+      console.log("Lane tuning unchanged.");
+      continue;
+    }
+
+    await handleTuningSet(tuningArgs);
   }
 }
 
@@ -2475,7 +2028,7 @@ async function runLoginPage() {
       continue;
     }
 
-    const provider = normalizeProvider(state.provider);
+    const provider = resolveProviderFromState(state);
     const authPath = thirdPartyAuthPath(provider);
     if (!fs.existsSync(authPath)) {
       throw new Error(`Third-party auth.json is missing at ${authPath}`);
@@ -2487,9 +2040,10 @@ async function runLoginPage() {
 async function runOverviewPage() {
   while (true) {
     const state = loadState();
+    const provider = resolveProviderFromState(state);
     const choice = await selectChoice({
       title: "Home",
-      description: "Manage third-party API key profiles for codex3. The plain codex CLI stays official; 'codex.exe to use' only changes which lane Desktop follows.",
+      description: `Manage third-party API key profiles for ${provider.command_name}. The plain codex CLI stays official; 'codex.exe to use' only changes which lane Desktop follows.`,
       state,
       choices: [
         {
@@ -2504,13 +2058,13 @@ async function runOverviewPage() {
         },
         {
           name: "provider",
-          message: "Provider (Advanced)",
-          hint: `edit shared wrapper/provider settings for ${normalizeProvider(state.provider).command_name}`,
+          message: "Config",
+          hint: `edit the single api111 lane for ${provider.command_name}`,
         },
         {
           name: "use_codex3",
           message: "codex.exe to use",
-          hint: `make Desktop codex.exe follow ${normalizeProvider(state.provider).command_name} without switching the plain codex CLI`,
+          hint: `make Desktop codex.exe follow ${provider.command_name} without switching the plain codex CLI`,
         },
         {
           name: "quit",
@@ -2546,7 +2100,7 @@ async function runOverviewPage() {
 }
 
 function printHelp() {
-  const provider = normalizeProvider(loadState().provider);
+  const provider = resolveProviderFromState(loadState());
   console.log(`${MANAGER_COMMAND_NAME}
 
 Machine-local manager for isolated ${provider.command_name} auth plus shared session directories on Windows.
@@ -2561,22 +2115,18 @@ Usage:
   ${MANAGER_COMMAND_NAME} delete <profile-id> [--force]
   ${MANAGER_COMMAND_NAME} use-codex3 [--force]
   ${MANAGER_COMMAND_NAME} sync-threads [--all] [--force]
-  ${MANAGER_COMMAND_NAME} mode show
-  ${MANAGER_COMMAND_NAME} mode set <compat|stable-http|api111>
-  ${MANAGER_COMMAND_NAME} provider show [--json]
-  ${MANAGER_COMMAND_NAME} provider set [--mode <compat|stable-http|api111>] [--command-name <name>] [--third-party-home <path>] [--shared-codex-home <path>] [--provider-name <name>] [--base-url <url>] [--model <name>] [--review-model <name>] [--preferred-auth-method <name>] [--requires-openai-auth <true|false>] [--supports-websockets <true|false>] [--model-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]
+  ${MANAGER_COMMAND_NAME} config show [--json]
+  ${MANAGER_COMMAND_NAME} config set [--command-name <name>] [--third-party-home <path>] [--shared-codex-home <path>] [--base-url <url>] [--model <name>] [--review-model <name>] [--model-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]
   ${MANAGER_COMMAND_NAME} doctor
 
 Notes:
-  - Running plain '${MANAGER_COMMAND_NAME}' opens a Home page with Login, Manage, Provider (Advanced), codex.exe to use, and Quit.
-  - ${MANAGER_COMMAND_NAME} manages saved third-party API key profiles first; provider and mode settings are advanced compatibility tools.
+  - Running plain '${MANAGER_COMMAND_NAME}' opens a Home page with Login, Manage, Config, codex.exe to use, and Quit.
+  - ${MANAGER_COMMAND_NAME} manages saved third-party API key profiles first; config only adjusts the single api111 lane used by ${provider.command_name}.
   - ${provider.command_name} always uses the isolated third-party home managed by ${MANAGER_COMMAND_NAME}.
   - 'codex.exe to use' changes Desktop follow-mode only; it does not switch the plain codex CLI command.
   - The default shared targets are sessions, archived_sessions, and session_index.jsonl.
-  - compat mode keeps third-party auth outside ~/.codex and aligns provider id with the built-in openai lane for better recent-session visibility.
-  - stable-http mode uses a custom provider id with supports_websockets=false for gateways that reconnect too often.
-  - api111 mode matches the newer tutorial shape with provider id api111 and preferred_auth_method=apikey.
-  - The provider mirror config lives under ${provider.third_party_home}\\config.toml by default and records the tutorial values applied to ${provider.command_name}.
+  - The generated config matches the current tutorial shape: provider id api111, Responses API, preferred_auth_method=apikey, and cli_auth_credentials_store=file.
+  - The provider mirror config lives under ${provider.third_party_home}\\config.toml by default and records the active settings applied to ${provider.command_name}.
   - Saved third-party API key profiles live under ${MANAGER_HOME}\\profiles\\.
 `);
 }
@@ -2615,7 +2165,7 @@ async function handleLogin(args) {
   }
 
   if (importCurrent) {
-    const provider = normalizeProvider(loadState().provider);
+    const provider = resolveProviderFromState(loadState());
     const authPath = thirdPartyAuthPath(provider);
     if (!fs.existsSync(authPath)) {
       throw new Error(`Third-party auth.json is missing at ${authPath}`);
@@ -2741,44 +2291,183 @@ async function handleDelete(state, args) {
   await deleteProfile(state, profileId, { skipProcessCheck: force });
 }
 
-async function handleProviderShow(state, args) {
+async function handleConfigShow(state, args) {
   const json = args.includes("--json");
-  const provider = normalizeProvider(state.provider);
+  const provider = resolveProviderFromState(state);
+  const payload = {
+    command_name: provider.command_name,
+    lane: "api111",
+    provider_name: provider.provider_name,
+    base_url: provider.base_url,
+    preferred_auth_method: provider.preferred_auth_method,
+    third_party_home: provider.third_party_home,
+    shared_codex_home: provider.shared_codex_home,
+    model: provider.model,
+    review_model: provider.review_model,
+    model_reasoning_effort: provider.model_reasoning_effort,
+    model_context_window: provider.model_context_window,
+    model_auto_compact_token_limit: provider.model_auto_compact_token_limit,
+  };
   if (json) {
-    printJson(provider);
+    printJson(payload);
     return;
   }
-  console.log(`Command name     : ${provider.command_name}`);
-  console.log(`Mode             : ${providerModeCliLabel(provider.mode)}`);
-  console.log(`Third-party home : ${provider.third_party_home}`);
-  console.log(`Shared Codex home: ${provider.shared_codex_home}`);
-  console.log(`Provider name    : ${provider.provider_name}`);
-  console.log(`Base URL         : ${provider.base_url}`);
-  console.log(`Model            : ${provider.model}`);
-  console.log(`Review model     : ${provider.review_model || "(none)"}`);
-  console.log(`Preferred auth   : ${provider.preferred_auth_method || "(none)"}`);
-  console.log(`Reasoning effort : ${provider.model_reasoning_effort}`);
-  console.log(`Context window   : ${provider.model_context_window}`);
-  console.log(`Auto compact     : ${provider.model_auto_compact_token_limit}`);
+  console.log(`Command name     : ${payload.command_name}`);
+  console.log(`Lane             : ${payload.lane}`);
+  console.log(`Provider name    : ${payload.provider_name}`);
+  console.log(`Base URL         : ${payload.base_url}`);
+  console.log(`Preferred auth   : ${payload.preferred_auth_method || "(none)"}`);
+  console.log(`Third-party home : ${payload.third_party_home}`);
+  console.log(`Shared Codex home: ${payload.shared_codex_home}`);
+  console.log(`Model            : ${payload.model}`);
+  console.log(`Review model     : ${payload.review_model || "(none)"}`);
+  console.log(`Reasoning effort : ${payload.model_reasoning_effort}`);
+  console.log(`Context window   : ${payload.model_context_window}`);
+  console.log(`Auto compact     : ${payload.model_auto_compact_token_limit}`);
+}
+
+async function handleConfigSet(args) {
+  const disallowed = new Set([
+    "--mode",
+    "--provider-name",
+    "--preferred-auth-method",
+    "--requires-openai-auth",
+    "--supports-websockets",
+    "--service-tier",
+    "--model-verbosity",
+    "--plan-mode-reasoning-effort",
+  ]);
+  for (const arg of args) {
+    if (disallowed.has(arg)) {
+      throw new Error(
+        `Unsupported config option: ${arg}. The Windows refactor keeps a single api111 lane and only exposes command/path/model settings.`,
+      );
+    }
+  }
+
+  if (!args.length) {
+    throw new Error(
+      `Usage: ${MANAGER_COMMAND_NAME} config set [--command-name <name>] [--third-party-home <path>] [--shared-codex-home <path>] [--base-url <url>] [--model <name>] [--review-model <name>] [--model-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]`,
+    );
+  }
+
+  await handleProviderSet(args);
+}
+
+async function handleTuningShow(state, args) {
+  const json = args.includes("--json");
+  const provider = resolveProviderFromState(state);
+  const tuning = normalizeLaneTuning(state.tuning, state.provider);
+  const payload = {
+    effective: {
+      model: provider.model,
+      review_model: provider.review_model,
+      model_reasoning_effort: provider.model_reasoning_effort,
+      service_tier: provider.service_tier,
+      model_verbosity: provider.model_verbosity,
+      plan_mode_reasoning_effort: provider.plan_mode_reasoning_effort,
+      model_context_window: provider.model_context_window,
+      model_auto_compact_token_limit: provider.model_auto_compact_token_limit,
+    },
+    overrides: tuning,
+  };
+  if (json) {
+    printJson(payload);
+    return;
+  }
+
+  console.log(`Model            : ${formatDisplayValue(provider.model)} (${getTuningSourceLabel(state, "model")})`);
+  console.log(`Review model     : ${formatDisplayValue(provider.review_model)} (${getTuningSourceLabel(state, "review_model")})`);
+  console.log(`Reasoning effort : ${formatDisplayValue(provider.model_reasoning_effort)} (${getTuningSourceLabel(state, "model_reasoning_effort")})`);
+  console.log(`Service tier     : ${formatDisplayValue(provider.service_tier)} (${getTuningSourceLabel(state, "service_tier")})`);
+  console.log(`Model verbosity  : ${formatDisplayValue(provider.model_verbosity)} (${getTuningSourceLabel(state, "model_verbosity")})`);
+  console.log(`Plan mode effort : ${formatDisplayValue(provider.plan_mode_reasoning_effort)} (${getTuningSourceLabel(state, "plan_mode_reasoning_effort")})`);
+  console.log(`Context window   : ${formatDisplayValue(provider.model_context_window)} (${getTuningSourceLabel(state, "model_context_window")})`);
+  console.log(`Auto compact     : ${formatDisplayValue(provider.model_auto_compact_token_limit)} (${getTuningSourceLabel(state, "model_auto_compact_token_limit")})`);
+}
+
+async function handleTuningSet(args) {
+  const state = loadState();
+  const nextTuning = {
+    ...normalizeLaneTuning(state.tuning, state.provider),
+  };
+  let changed = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--model") {
+      nextTuning.model = parseOptionValue(args, index, arg);
+      changed = true;
+      index += 1;
+    } else if (arg === "--review-model") {
+      nextTuning.review_model = parseOptionValue(args, index, arg);
+      changed = true;
+      index += 1;
+    } else if (arg === "--model-reasoning-effort") {
+      nextTuning.model_reasoning_effort = parseOptionValue(args, index, arg);
+      changed = true;
+      index += 1;
+    } else if (arg === "--service-tier") {
+      nextTuning.service_tier = parseOptionValue(args, index, arg);
+      changed = true;
+      index += 1;
+    } else if (arg === "--model-verbosity") {
+      nextTuning.model_verbosity = parseOptionValue(args, index, arg);
+      changed = true;
+      index += 1;
+    } else if (arg === "--plan-mode-reasoning-effort") {
+      nextTuning.plan_mode_reasoning_effort = parseOptionValue(args, index, arg);
+      changed = true;
+      index += 1;
+    } else if (arg === "--model-context-window") {
+      nextTuning.model_context_window = parseOptionValue(args, index, arg);
+      changed = true;
+      index += 1;
+    } else if (arg === "--model-auto-compact-token-limit") {
+      nextTuning.model_auto_compact_token_limit = parseOptionValue(args, index, arg);
+      changed = true;
+      index += 1;
+    } else {
+      throw new Error(`Unknown model config option: ${arg}`);
+    }
+  }
+
+  if (!changed) {
+    throw new Error(
+      `Usage: ${MANAGER_COMMAND_NAME} config set [--model <name>] [--review-model <name>] [--model-reasoning-effort <name>] [--service-tier <name>] [--model-verbosity <name>] [--plan-mode-reasoning-effort <name>] [--model-context-window <n>] [--model-auto-compact-token-limit <n>]`,
+    );
+  }
+
+  state.tuning = normalizeLaneTuning(nextTuning);
+  await applyResolvedProviderState(state);
+  console.log(`Updated model settings for '${resolveProviderFromState(state).command_name}'.`);
+}
+
+async function handleTuningReset() {
+  const state = loadState();
+  state.tuning = {};
+  await applyResolvedProviderState(state);
+  console.log("Reset model settings back to the api111 defaults.");
 }
 
 async function handleProviderSet(args) {
   const state = loadState();
   const current = normalizeProvider(state.provider);
+  const currentTuning = normalizeLaneTuning(state.tuning, state.provider);
   const next = {
     ...current,
   };
+  const nextTuning = {
+    ...currentTuning,
+  };
   const providedKeys = new Set();
+  let tuningChanged = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--command-name") {
       next.command_name = parseOptionValue(args, index, arg);
       providedKeys.add("command_name");
-      index += 1;
-    } else if (arg === "--mode") {
-      next.mode = normalizeProviderMode(parseOptionValue(args, index, arg));
-      providedKeys.add("mode");
       index += 1;
     } else if (arg === "--third-party-home") {
       next.third_party_home = parseOptionValue(args, index, arg);
@@ -2788,98 +2477,63 @@ async function handleProviderSet(args) {
       next.shared_codex_home = parseOptionValue(args, index, arg);
       providedKeys.add("shared_codex_home");
       index += 1;
-    } else if (arg === "--provider-name") {
-      next.provider_name = parseOptionValue(args, index, arg);
-      providedKeys.add("provider_name");
-      index += 1;
     } else if (arg === "--base-url") {
       next.base_url = parseOptionValue(args, index, arg);
       providedKeys.add("base_url");
       index += 1;
     } else if (arg === "--model") {
-      next.model = parseOptionValue(args, index, arg);
+      nextTuning.model = parseOptionValue(args, index, arg);
       providedKeys.add("model");
+      tuningChanged = true;
       index += 1;
     } else if (arg === "--review-model") {
-      next.review_model = parseOptionValue(args, index, arg);
+      nextTuning.review_model = parseOptionValue(args, index, arg);
       providedKeys.add("review_model");
-      index += 1;
-    } else if (arg === "--preferred-auth-method") {
-      next.preferred_auth_method = parseOptionValue(args, index, arg);
-      providedKeys.add("preferred_auth_method");
-      index += 1;
-    } else if (arg === "--requires-openai-auth") {
-      next.requires_openai_auth = parseOptionValue(args, index, arg);
-      providedKeys.add("requires_openai_auth");
-      index += 1;
-    } else if (arg === "--supports-websockets") {
-      next.supports_websockets = parseOptionValue(args, index, arg);
-      providedKeys.add("supports_websockets");
+      tuningChanged = true;
       index += 1;
     } else if (arg === "--model-reasoning-effort") {
-      next.model_reasoning_effort = parseOptionValue(args, index, arg);
+      nextTuning.model_reasoning_effort = parseOptionValue(args, index, arg);
       providedKeys.add("model_reasoning_effort");
+      tuningChanged = true;
+      index += 1;
+    } else if (arg === "--service-tier") {
+      nextTuning.service_tier = parseOptionValue(args, index, arg);
+      providedKeys.add("service_tier");
+      tuningChanged = true;
+      index += 1;
+    } else if (arg === "--model-verbosity") {
+      nextTuning.model_verbosity = parseOptionValue(args, index, arg);
+      providedKeys.add("model_verbosity");
+      tuningChanged = true;
+      index += 1;
+    } else if (arg === "--plan-mode-reasoning-effort") {
+      nextTuning.plan_mode_reasoning_effort = parseOptionValue(args, index, arg);
+      providedKeys.add("plan_mode_reasoning_effort");
+      tuningChanged = true;
       index += 1;
     } else if (arg === "--model-context-window") {
-      next.model_context_window = parseOptionValue(args, index, arg);
+      nextTuning.model_context_window = parseOptionValue(args, index, arg);
       providedKeys.add("model_context_window");
+      tuningChanged = true;
       index += 1;
     } else if (arg === "--model-auto-compact-token-limit") {
-      next.model_auto_compact_token_limit = parseOptionValue(args, index, arg);
+      nextTuning.model_auto_compact_token_limit = parseOptionValue(args, index, arg);
       providedKeys.add("model_auto_compact_token_limit");
+      tuningChanged = true;
       index += 1;
     } else {
-      throw new Error(`Unknown provider set option: ${arg}`);
-    }
-  }
-
-  if (providedKeys.has("mode")) {
-    for (const resetKey of [
-      "provider_name",
-      "base_url",
-      "model",
-      "review_model",
-      "preferred_auth_method",
-      "requires_openai_auth",
-      "supports_websockets",
-      "model_reasoning_effort",
-    ]) {
-      if (!providedKeys.has(resetKey)) {
-        delete next[resetKey];
-      }
+      throw new Error(`Unknown config set option: ${arg}`);
     }
   }
 
   state.provider = normalizeProvider(next);
-  saveState(state);
-  writeThirdPartyConfig(state.provider);
-  runWrapperInstaller(state.provider);
-  if (state.active_profile_id) {
-    await activateProfile(state, state.active_profile_id, {
-      silent: true,
-      skipProcessCheck: true,
-    });
+  if (tuningChanged) {
+    state.tuning = normalizeLaneTuning(nextTuning);
   }
+  await applyResolvedProviderState(state);
   console.log(
-    `Updated provider settings for '${state.provider.command_name}' (${providerModeCliLabel(state.provider.mode)}).`,
+    `Updated config for '${state.provider.command_name}' on the api111 lane.`,
   );
-}
-
-async function handleMode(state, args) {
-  const [subcommand, ...rest] = args;
-  if (!subcommand || subcommand === "show") {
-    await handleProviderShow(state, []);
-    return;
-  }
-  if (subcommand === "set") {
-    const modeArg = rest[0];
-    if (!modeArg) {
-      throw new Error(`Usage: ${MANAGER_COMMAND_NAME} mode set <compat|stable-http|api111>`);
-    }
-    await handleProviderSet(["--mode", modeArg]);
-    return;
-  }
-  throw new Error(`Unknown mode subcommand: ${subcommand}`);
 }
 
 async function handleDoctor(state) {
@@ -2904,6 +2558,7 @@ async function handleDoctor(state) {
 async function handleSyncThreads(state, args) {
   let force = false;
   let scope = "recent";
+  const provider = resolveProviderFromState(state);
 
   for (const arg of args) {
     if (arg === "--force") {
@@ -2933,7 +2588,6 @@ async function handleSyncThreads(state, args) {
     assertNoRunningCodexProcesses();
   }
 
-  const provider = normalizeProvider(state.provider);
   const results = syncManagedThreadMetadata(provider, { scope });
   results.forEach((result) => {
     if (result.error) {
@@ -3002,22 +2656,17 @@ async function handleCommand(args) {
     return;
   }
 
-  if (command === "provider") {
-    const [subcommand, ...providerArgs] = rest;
+  if (command === "config") {
+    const [subcommand, ...configArgs] = rest;
     if (!subcommand || subcommand === "show") {
-      await handleProviderShow(state, providerArgs);
+      await handleConfigShow(state, configArgs);
       return;
     }
     if (subcommand === "set") {
-      await handleProviderSet(providerArgs);
+      await handleConfigSet(configArgs);
       return;
     }
-    throw new Error(`Unknown provider subcommand: ${subcommand}`);
-  }
-
-  if (command === "mode") {
-    await handleMode(state, rest);
-    return;
+    throw new Error(`Unknown config subcommand: ${subcommand}`);
   }
 
   if (command === "doctor") {

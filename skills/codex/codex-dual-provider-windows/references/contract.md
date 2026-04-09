@@ -1,17 +1,34 @@
 # Contract
 
-`codex3_m` is the machine-local manager for the third-party API key lane on Windows.
+`codex3_m` is the machine-local Windows manager for the third-party API-key lane.
 
 ## User-Facing Behavior
 
-- Home is centered on third-party API key management.
+- Home is centered on third-party API key profiles.
 - `Login` saves or imports a third-party API key profile.
 - `Manage` switches, renames, or deletes saved third-party API key profiles.
-- `codex.exe to use` means "choose whether Desktop `codex.exe` should follow the active third-party profile".
-- `codex.exe to use` is a Desktop bridge label only; it does not mean the plain `codex` CLI command has been renamed or switched.
-- On the current Windows adapter, that Desktop-only guarantee depends on the managed plain `codex` launcher being pinned to `~/.codex-official`.
-- On the current Windows adapter, the managed plain `codex` launcher must also inject official `-c` overrides such as `model_provider="openai"` and `cli_auth_credentials_store="file"` and clear inherited `OPENAI_*` env overrides, otherwise plain `codex` can still drift onto the third-party lane.
-- Advanced provider compatibility settings remain available, but they are not the main identity story.
+- `Config` adjusts only the small set of supported lane settings:
+  - wrapper command name
+  - third-party home
+  - shared Codex home
+  - base URL
+  - model
+  - review model
+  - reasoning effort
+  - context window
+  - auto-compact token limit
+- `codex.exe to use` means "make Desktop `codex.exe` follow the active third-party profile".
+- `codex.exe to use` is a Desktop bridge label only; it does not rename or switch the plain `codex` CLI.
+
+## Fixed Lane Shape
+
+- The public third-party lane is a single `api111` configuration shape.
+- The generated config must keep:
+  - `model_provider = "api111"`
+  - `preferred_auth_method = "apikey"`
+  - `cli_auth_credentials_store = "file"`
+  - `wire_api = "responses"`
+- Do not re-introduce `compat`, `stable-http`, or other multi-mode branches into the public contract.
 
 ## Separation Rules
 
@@ -28,12 +45,5 @@
   - `sessions`
   - `archived_sessions`
   - `session_index.jsonl`
-- Treat broader directory sharing as optional and adapter-specific.
 - Do not live-share SQLite sidebar/thread databases.
 - If the thread list needs to align across lanes, use sync/backfill instead of SQLite live-sharing.
-
-## Advanced Compatibility
-
-- Provider mode, provider id, base URL, model, and tutorial mapping are advanced controls.
-- Keep them compatible with the current provider tutorial when the task is specifically about provider setup or repair.
-- Do not let advanced provider detail obscure the main contract: `codex3_m` manages third-party API key profiles.

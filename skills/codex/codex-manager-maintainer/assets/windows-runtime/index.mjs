@@ -6,36 +6,54 @@ import path from "node:path";
 import process from "node:process";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import readlinePromises from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
-import { DatabaseSync } from "node:sqlite";
-import enquirer from "enquirer";
-
-const { Select, Input, Confirm, Password } = enquirer;
-
-function isIgnorablePromptCloseError(error) {
-  return error && typeof error === "object" && error.code === "ERR_USE_AFTER_CLOSE";
-}
-
-function installPromptCloseGuards() {
-  process.on("uncaughtException", (error) => {
-    if (isIgnorablePromptCloseError(error)) {
-      process.exitCode = 0;
-      return;
-    }
-    console.error(`Error: ${error.message || error}`);
-    process.exit(1);
-  });
-
-  process.on("unhandledRejection", (reason) => {
-    if (isIgnorablePromptCloseError(reason)) {
-      process.exitCode = 0;
-      return;
-    }
-    console.error(`Error: ${reason?.message || reason}`);
-    process.exit(1);
-  });
-}
+import {
+  ensureDir,
+  ensureDirectoryJunction,
+  ensureFileHardLink,
+  pathExists,
+  readJson,
+  readJsonIfExists,
+  readText,
+  safeRealPath,
+  writeJson,
+  writeText,
+} from "./_shared/common.mjs";
+import { syncDesktopHomeFromSource } from "./_shared/desktop-home-sync.mjs";
+import {
+  PLAIN_CODEX_MODE_OFFICIAL,
+  PLAIN_CODEX_MODE_THIRD_PARTY,
+  getPlainCodexMode as getPlainCodexModeState,
+  readPlainCodexModeState as readPlainCodexModeStateFile,
+  setPlainCodexModeState as writePlainCodexModeState,
+} from "./_shared/plain-codex-mode.mjs";
+import {
+  assertNoRunningCodexProcesses as assertNoRunningCodexProcessesCore,
+  detectRunningCodexProcesses as detectRunningCodexProcessesCore,
+  formatProcessSummary as formatProcessSummaryCore,
+} from "./_shared/processes.mjs";
+import {
+  Confirm,
+  Input,
+  Password,
+  Select,
+  installPromptCloseGuards,
+  promptConfirmPrompt as promptConfirmPromptCore,
+  promptInputPrompt as promptInputPromptCore,
+  promptLine as promptLineCore,
+  promptRequired as promptRequiredCore,
+  promptSecretPrompt as promptSecretPromptCore,
+  promptYesNo as promptYesNoCore,
+  runPrompt as runPromptCore,
+} from "./_shared/prompts.mjs";
+import {
+  copyDatabaseWithSidecars as copyDatabaseWithSidecarsCore,
+  findRecentRolloutsById as findRecentRolloutsByIdCore,
+  parseThreadRowFromRollout as parseThreadRowFromRolloutCore,
+  readRecentSessionIndexEntries as readRecentSessionIndexEntriesCore,
+  removeDatabaseSidecars as removeDatabaseSidecarsCore,
+  syncSharedThreadMetadata as syncSharedThreadMetadataCore,
+  toUnixTimestampSeconds as toUnixTimestampSecondsCore,
+} from "./_shared/thread-sync.mjs";
 
 installPromptCloseGuards();
 
@@ -46,13 +64,7 @@ const ACCOUNTS_DIR = path.join(MANAGER_HOME, "accounts");
 const OFFICIAL_API_KEYS_DIR = path.join(MANAGER_HOME, "official-api-keys");
 const BACKUPS_DIR = path.join(MANAGER_HOME, "backups");
 const TMP_DIR = path.join(MANAGER_HOME, "tmp");
-const PLAIN_CODEX_BRIDGE_DIR = path.join(MANAGER_HOME, "plain-codex-bridge");
 const PLAIN_CODEX_MODE_STATE_PATH = path.join(MANAGER_HOME, "plain-codex-mode.json");
-const PLAIN_CODEX_BACKUP_AUTH_PATH = path.join(PLAIN_CODEX_BRIDGE_DIR, "official-auth.json");
-const PLAIN_CODEX_BACKUP_CONFIG_PATH = path.join(
-  PLAIN_CODEX_BRIDGE_DIR,
-  "official-config.toml",
-);
 
 const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
 const OFFICIAL_AUTH_PATH = path.join(OFFICIAL_HOME, "auth.json");
@@ -77,212 +89,6 @@ const MANAGED_CONFIG_KEYS = {
 
 const PROFILE_KIND_CHATGPT = "chatgpt";
 const PROFILE_KIND_OFFICIAL_API_KEY = "official_api_key";
-const PLAIN_CODEX_MODE_OFFICIAL = "official";
-const PLAIN_CODEX_MODE_THIRD_PARTY = "third_party";
-
-function ensureDir(dirPath) {
-  fs.mkdirSync(dirPath, { recursive: true });
-}
-
-function writeJson(filePath, value) {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n", "utf8");
-}
-
-function writeText(filePath, content) {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, content, "utf8");
-}
-
-function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
-function readText(filePath) {
-  return fs.readFileSync(filePath, "utf8");
-}
-
-function pathExists(filePath) {
-  try {
-    return fs.existsSync(filePath);
-  } catch {
-    return false;
-  }
-}
-
-function readJsonIfExists(filePath) {
-  if (!pathExists(filePath)) {
-    return null;
-  }
-  try {
-    return readJson(filePath);
-  } catch {
-    return null;
-  }
-}
-
-function readRecentSessionIndexEntries(homePath) {
-  const entries = [];
-  const filePath = path.join(homePath, "session_index.jsonl");
-  if (!pathExists(filePath)) {
-    return entries;
-  }
-
-  const text = readText(filePath);
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) {
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed?.id) {
-        entries.push(parsed);
-      }
-    } catch {
-      // ignore malformed recent-session index lines
-    }
-  }
-  return entries;
-}
-
-function findRecentRolloutsById(sharedHome, wantedIds) {
-  const found = new Map();
-  const wanted = new Set(wantedIds.filter(Boolean));
-  if (!wanted.size) {
-    return found;
-  }
-
-  for (const bucketName of ["sessions", "archived_sessions"]) {
-    const root = path.join(sharedHome, bucketName);
-    if (!pathExists(root)) {
-      continue;
-    }
-
-    const stack = [root];
-    while (stack.length && found.size < wanted.size) {
-      const current = stack.pop();
-      const entries = fs.readdirSync(current, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(current, entry.name);
-        if (entry.isDirectory()) {
-          stack.push(fullPath);
-          continue;
-        }
-        if (!entry.isFile() || !/^rollout-.*\.jsonl$/i.test(entry.name)) {
-          continue;
-        }
-
-        const match = entry.name.match(
-          /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
-        );
-        const rolloutId = match?.[1];
-        if (!rolloutId || !wanted.has(rolloutId)) {
-          continue;
-        }
-
-        found.set(rolloutId, {
-          bucketName,
-          root,
-          fullPath,
-        });
-      }
-    }
-  }
-
-  return found;
-}
-
-function toUnixTimestampSeconds(value) {
-  const parsed = Date.parse(value || "");
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-  return Math.floor(parsed / 1000);
-}
-
-function extractTextContent(content) {
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content
-    .filter((item) => item?.type === "input_text" || item?.type === "output_text")
-    .map((item) => String(item.text || ""))
-    .join("\n")
-    .trim();
-}
-
-function readRolloutPreviewText(rolloutPath, maxBytes = 256 * 1024) {
-  const handle = fs.openSync(rolloutPath, "r");
-  try {
-    const buffer = Buffer.alloc(maxBytes);
-    const bytesRead = fs.readSync(handle, buffer, 0, maxBytes, 0);
-    return buffer.toString("utf8", 0, bytesRead);
-  } finally {
-    fs.closeSync(handle);
-  }
-}
-
-function copyDatabaseWithSidecars(sourceDbPath, destDbPath) {
-  fs.copyFileSync(sourceDbPath, destDbPath);
-  for (const suffix of ["-wal", "-shm"]) {
-    const sourceSidecar = `${sourceDbPath}${suffix}`;
-    if (pathExists(sourceSidecar)) {
-      fs.copyFileSync(sourceSidecar, `${destDbPath}${suffix}`);
-    }
-  }
-}
-
-function removeDatabaseSidecars(dbPath) {
-  for (const suffix of ["-wal", "-shm"]) {
-    const sidecarPath = `${dbPath}${suffix}`;
-    if (pathExists(sidecarPath)) {
-      fs.rmSync(sidecarPath, { force: true });
-    }
-  }
-}
-
-function safeRealPath(filePath) {
-  try {
-    return typeof fs.realpathSync.native === "function"
-      ? fs.realpathSync.native(filePath)
-      : fs.realpathSync(filePath);
-  } catch {
-    return null;
-  }
-}
-
-function moveAsidePath(filePath) {
-  if (!pathExists(filePath)) {
-    return;
-  }
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  fs.renameSync(filePath, `${filePath}.pre-shared-${timestamp}`);
-}
-
-function ensureDirectoryJunction(linkPath, targetPath) {
-  ensureDir(targetPath);
-  const linkRealPath = safeRealPath(linkPath);
-  const targetRealPath = safeRealPath(targetPath);
-  if (linkRealPath && targetRealPath && path.resolve(linkRealPath) === path.resolve(targetRealPath)) {
-    return;
-  }
-  moveAsidePath(linkPath);
-  fs.symlinkSync(targetPath, linkPath, "junction");
-}
-
-function ensureFileHardLink(linkPath, targetPath) {
-  ensureDir(path.dirname(targetPath));
-  if (!pathExists(targetPath)) {
-    fs.writeFileSync(targetPath, "", "utf8");
-  }
-  const linkRealPath = safeRealPath(linkPath);
-  const targetRealPath = safeRealPath(targetPath);
-  if (linkRealPath && targetRealPath && path.resolve(linkRealPath) === path.resolve(targetRealPath)) {
-    return;
-  }
-  moveAsidePath(linkPath);
-  fs.linkSync(targetPath, linkPath);
-}
 
 function ensureOfficialCliHomeLayout() {
   ensureDir(OFFICIAL_CLI_HOME);
@@ -321,7 +127,7 @@ function syncManagedThreadMetadata({ scope = "recent" } = {}) {
     try {
       results.push({
         targetHome,
-        ...syncSharedThreadMetadata(OFFICIAL_HOME, targetHome, { scope }),
+        ...syncSharedThreadMetadataCore(OFFICIAL_HOME, targetHome, { scope }),
       });
     } catch (error) {
       if (targetHome === OFFICIAL_HOME && pathExists(path.join(OFFICIAL_CLI_HOME, "state_5.sqlite"))) {
@@ -370,75 +176,12 @@ function findLatestStateDbBackup() {
 }
 
 function parseThreadRowFromRollout(rolloutPath, fallbackTitle) {
-  const text = readRolloutPreviewText(rolloutPath);
-  const lines = text.split(/\r?\n/);
-
-  let sessionMeta = null;
-  let turnContext = null;
-  let firstUserMessage = "";
-
-  for (const line of lines) {
-    if (!line.trim()) {
-      continue;
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    if (!sessionMeta && parsed.type === "session_meta") {
-      sessionMeta = parsed.payload || null;
-      continue;
-    }
-
-    if (!turnContext && parsed.type === "turn_context") {
-      turnContext = parsed.payload || null;
-      continue;
-    }
-
-    if (!firstUserMessage && parsed.type === "response_item" && parsed.payload?.role === "user") {
-      firstUserMessage = extractTextContent(parsed.payload.content);
-    }
-
-    if (sessionMeta && turnContext && firstUserMessage) {
-      break;
-    }
-  }
-
-  const createdAtIso = sessionMeta?.timestamp || null;
-  return {
-    id: sessionMeta?.id || null,
-    created_at: toUnixTimestampSeconds(createdAtIso),
-    updated_at: toUnixTimestampSeconds(createdAtIso),
-    source: String(sessionMeta?.source || "cli"),
-    model_provider: String(sessionMeta?.model_provider || ""),
-    cwd: String(sessionMeta?.cwd || turnContext?.cwd || ""),
-    title: fallbackTitle || firstUserMessage || sessionMeta?.id || path.basename(rolloutPath),
-    sandbox_policy: JSON.stringify(turnContext?.sandbox_policy || { type: "workspace-write" }),
-    approval_mode: String(turnContext?.approval_policy || "on-request"),
-    tokens_used: 0,
-    has_user_event: firstUserMessage ? 1 : 0,
-    archived: 0,
-    archived_at: null,
-    git_sha: sessionMeta?.git?.sha || null,
-    git_branch: sessionMeta?.git?.branch || null,
-    git_origin_url: sessionMeta?.git?.origin_url || null,
-    cli_version: String(sessionMeta?.cli_version || ""),
-    first_user_message: firstUserMessage || "",
-    agent_nickname: null,
-    agent_role: null,
-    memory_mode: String(turnContext?.memory_mode || "enabled"),
-    model: turnContext?.model || null,
-    reasoning_effort: turnContext?.effort || null,
-  };
+  return parseThreadRowFromRolloutCore(rolloutPath, fallbackTitle);
 }
 
 function buildRecentSharedThreadRows(sharedHome, targetHome) {
-  const indexEntries = readRecentSessionIndexEntries(sharedHome);
-  const found = findRecentRolloutsById(
+  const indexEntries = readRecentSessionIndexEntriesCore(sharedHome);
+  const found = findRecentRolloutsByIdCore(
     sharedHome,
     indexEntries.map((entry) => entry.id),
   );
@@ -450,14 +193,14 @@ function buildRecentSharedThreadRows(sharedHome, targetHome) {
       continue;
     }
 
-    const row = parseThreadRowFromRollout(located.fullPath, entry.thread_name || "");
+    const row = parseThreadRowFromRolloutCore(located.fullPath, entry.thread_name || "");
     if (!row.id) {
       continue;
     }
 
     row.archived = located.bucketName === "archived_sessions" ? 1 : 0;
     row.archived_at = row.archived ? row.updated_at : null;
-    row.updated_at = Math.max(row.updated_at, toUnixTimestampSeconds(entry.updated_at || ""));
+    row.updated_at = Math.max(row.updated_at, toUnixTimestampSecondsCore(entry.updated_at || ""));
     row.title = entry.thread_name || row.title;
     row.rollout_path = path.join(
       targetHome,
@@ -471,7 +214,7 @@ function buildRecentSharedThreadRows(sharedHome, targetHome) {
 }
 
 function buildAllSharedThreadRows(sharedHome, targetHome) {
-  const indexEntries = readRecentSessionIndexEntries(sharedHome);
+  const indexEntries = readRecentSessionIndexEntriesCore(sharedHome);
   const indexById = new Map(indexEntries.map((entry) => [entry.id, entry]));
   const rows = [];
 
@@ -501,14 +244,14 @@ function buildAllSharedThreadRows(sharedHome, targetHome) {
         const rolloutId = match?.[1];
         const indexEntry = rolloutId ? indexById.get(rolloutId) : null;
 
-        const row = parseThreadRowFromRollout(fullPath, indexEntry?.thread_name || "");
+        const row = parseThreadRowFromRolloutCore(fullPath, indexEntry?.thread_name || "");
         if (!row.id) {
           continue;
         }
 
         row.archived = bucketName === "archived_sessions" ? 1 : 0;
         row.archived_at = row.archived ? row.updated_at : null;
-        row.updated_at = Math.max(row.updated_at, toUnixTimestampSeconds(indexEntry?.updated_at || ""));
+        row.updated_at = Math.max(row.updated_at, toUnixTimestampSecondsCore(indexEntry?.updated_at || ""));
         row.title = indexEntry?.thread_name || row.title;
         row.rollout_path = path.join(targetHome, bucketName, path.relative(root, fullPath));
         rows.push(row);
@@ -520,105 +263,15 @@ function buildAllSharedThreadRows(sharedHome, targetHome) {
 }
 
 function syncSharedThreadMetadata(sharedHome, targetHome, { scope = "recent" } = {}) {
-  const targetDbPath = path.join(targetHome, "state_5.sqlite");
-  if (!pathExists(targetDbPath)) {
-    return { scanned: 0, upserted: 0, skipped: "missing_state_db" };
-  }
-
-  const rows =
-    scope === "all"
-      ? buildAllSharedThreadRows(sharedHome, targetHome)
-      : buildRecentSharedThreadRows(sharedHome, targetHome);
-  if (!rows.length) {
-    return { scanned: 0, upserted: 0, skipped: "no_recent_threads" };
-  }
-
-  function applyRows(dbPath) {
-    const db = new DatabaseSync(dbPath);
-    try {
-      const columns = db.prepare(`PRAGMA table_info("threads")`).all().map((row) => row.name);
-      if (!columns.length) {
-        return { scanned: rows.length, upserted: 0, skipped: "missing_threads_table" };
-      }
-
-      const usableColumns = columns.filter((name) =>
-        rows.some((row) => Object.hasOwn(row, name)),
-      );
-      const placeholders = usableColumns.map(() => "?").join(", ");
-      const updateClause = usableColumns
-        .filter((name) => name !== "id")
-        .map((name) => `${name} = excluded.${name}`)
-        .join(", ");
-
-      const sql = `
-        INSERT INTO threads (${usableColumns.join(", ")})
-        VALUES (${placeholders})
-        ON CONFLICT(id) DO UPDATE SET ${updateClause}
-      `;
-      const statement = db.prepare(sql);
-
-      db.exec("BEGIN");
-      try {
-        for (const row of rows) {
-          statement.run(
-            ...usableColumns.map((name) => (Object.hasOwn(row, name) ? row[name] : null)),
-          );
-        }
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-
-      return { scanned: rows.length, upserted: rows.length, scope };
-    } finally {
-      db.close();
-    }
-  }
-
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-thread-sync-"));
-  const tmpDbPath = path.join(tmpDir, "state_5.sqlite");
-  try {
-    try {
-      copyDatabaseWithSidecars(targetDbPath, tmpDbPath);
-      const result = applyRows(tmpDbPath);
-      removeDatabaseSidecars(targetDbPath);
-      fs.copyFileSync(tmpDbPath, targetDbPath);
-      return {
-        ...result,
-        repaired_from_copy: true,
-      };
-    } catch (copyError) {
-      const backupDbPath = findLatestStateDbBackup();
-      if (!backupDbPath) {
-        throw copyError;
-      }
-      copyDatabaseWithSidecars(backupDbPath, tmpDbPath);
-      const result = applyRows(tmpDbPath);
-      removeDatabaseSidecars(targetDbPath);
-      fs.copyFileSync(tmpDbPath, targetDbPath);
-      return {
-        ...result,
-        repaired_from_backup: true,
-        copy_error: copyError.message,
-        backup_db_path: backupDbPath,
-      };
-    }
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+  const result = syncSharedThreadMetadataCore(sharedHome, targetHome, { scope });
+  return {
+    ...result,
+    scope,
+  };
 }
 
 function readPlainCodexModeState() {
-  if (!pathExists(PLAIN_CODEX_MODE_STATE_PATH)) {
-    return null;
-  }
-  try {
-    const parsed = readJson(PLAIN_CODEX_MODE_STATE_PATH);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
+  return readPlainCodexModeStateFile(PLAIN_CODEX_MODE_STATE_PATH);
 }
 
 function getPlainCodexMode() {
@@ -629,22 +282,7 @@ function getPlainCodexMode() {
 }
 
 function setPlainCodexModeState(mode, extra = {}) {
-  ensureDir(PLAIN_CODEX_BRIDGE_DIR);
-  writeJson(PLAIN_CODEX_MODE_STATE_PATH, {
-    mode,
-    updated_at: new Date().toISOString(),
-    ...extra,
-  });
-}
-
-function restorePlainCodexBridgeBackups() {
-  ensureDir(OFFICIAL_HOME);
-  if (pathExists(PLAIN_CODEX_BACKUP_CONFIG_PATH)) {
-    fs.copyFileSync(PLAIN_CODEX_BACKUP_CONFIG_PATH, OFFICIAL_CONFIG_PATH);
-  }
-  if (pathExists(PLAIN_CODEX_BACKUP_AUTH_PATH)) {
-    fs.copyFileSync(PLAIN_CODEX_BACKUP_AUTH_PATH, OFFICIAL_AUTH_PATH);
-  }
+  writePlainCodexModeState(PLAIN_CODEX_MODE_STATE_PATH, mode, extra);
 }
 
 function loadState() {
@@ -653,7 +291,6 @@ function loadState() {
   ensureDir(OFFICIAL_API_KEYS_DIR);
   ensureDir(BACKUPS_DIR);
   ensureDir(TMP_DIR);
-  ensureDir(PLAIN_CODEX_BRIDGE_DIR);
 
   if (!fs.existsSync(STATE_PATH)) {
     const state = {
@@ -1554,9 +1191,6 @@ function readOfficialCliConfigSeedText() {
   if (existing.trim()) {
     return existing;
   }
-  if (pathExists(PLAIN_CODEX_BACKUP_CONFIG_PATH)) {
-    return readText(PLAIN_CODEX_BACKUP_CONFIG_PATH);
-  }
   if (pathExists(OFFICIAL_CONFIG_PATH) && getPlainCodexMode() === PLAIN_CODEX_MODE_OFFICIAL) {
     return readOfficialConfigText();
   }
@@ -1619,53 +1253,19 @@ function removeManagedWorkspaceRestrictionFromOfficialCliHome() {
 }
 
 function detectRunningCodexProcesses() {
-  if (process.platform !== "win32") {
-    return [];
-  }
-
-  const psScript = `
-$me = ${process.pid};
-$items = Get-CimInstance Win32_Process |
-  Where-Object {
-    $_.ProcessId -ne $me -and
-    $_.CommandLine -and (
-      $_.CommandLine -match '(?i)AppData\\\\Roaming\\\\npm\\\\node_modules\\\\@openai\\\\codex' -or
-      $_.CommandLine -match '(?i)codex-win32-x64'
-    ) -and
-    $_.CommandLine -notmatch '(?i)codex-manager'
-  } |
-  Select-Object ProcessId, Name, CommandLine;
-$items | ConvertTo-Json -Compress
-`;
-
-  const result = spawnSync("powershell", ["-NoProfile", "-Command", psScript], {
-    encoding: "utf8",
-    windowsHide: true,
+  return detectRunningCodexProcessesCore({
+    excludePattern: "(?i)codex-manager",
   });
-
-  if (result.status !== 0 || !result.stdout.trim()) {
-    return [];
-  }
-
-  const parsed = JSON.parse(result.stdout.trim());
-  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 function formatProcessSummary(processes) {
-  if (!processes.length) {
-    return "none";
-  }
-  return processes.map((item) => `${item.Name}(${item.ProcessId})`).join(", ");
+  return formatProcessSummaryCore(processes);
 }
 
 function assertNoRunningCodexProcesses() {
-  const processes = detectRunningCodexProcesses();
-  if (!processes.length) {
-    return;
-  }
-  throw new Error(
-    `Running Codex CLI process detected: ${formatProcessSummary(processes)}. Close it first or rerun with --force.`,
-  );
+  return assertNoRunningCodexProcessesCore({
+    excludePattern: "(?i)codex-manager",
+  });
 }
 
 function saveAccountAuth(accountId, authData) {
@@ -1854,22 +1454,14 @@ async function setPlainCodexOfficialMode(
   }
 
   const activeProfile = getActiveOfficialProfile(state);
-  const hasBackupConfig = pathExists(PLAIN_CODEX_BACKUP_CONFIG_PATH);
-  const hasBackupAuth = pathExists(PLAIN_CODEX_BACKUP_AUTH_PATH);
-
-  if (!activeProfile && !hasBackupConfig && !hasBackupAuth) {
-    throw new Error(
-      "No active official profile or codex.exe backup is available. Activate an official profile in codex_m first.",
-    );
-  }
-
-  restorePlainCodexBridgeBackups();
+  ensureOfficialCliHomeLayout();
+  syncDesktopHomeFromSource({
+    sourceHome: OFFICIAL_CLI_HOME,
+    desktopHome: OFFICIAL_HOME,
+    label: "Official CLI home",
+  });
 
   if (activeProfile) {
-    applyOfficialProfileRefToDesktopHome(state, {
-      kind: activeProfile.kind,
-      id: activeProfile.id,
-    });
     try {
       syncManagedThreadMetadata({ scope: "recent" });
     } catch (error) {
@@ -1898,7 +1490,7 @@ async function setPlainCodexOfficialMode(
     if (activeProfile) {
       console.log(`Restored official profile: ${getActiveOfficialProfileLabel(state)}`);
     } else {
-      console.log("Restored the last codex.exe official backup.");
+      console.log("Restored Desktop auth/config from ~/.codex-official.");
     }
     if (skipProcessCheck) {
       console.log(
@@ -2311,36 +1903,15 @@ function getActiveOfficialProfileLabel(state) {
 }
 
 async function promptLine(question) {
-  const rl = readlinePromises.createInterface({ input, output });
-  try {
-    const answer = await rl.question(question);
-    return answer.trim();
-  } finally {
-    rl.close();
-  }
+  return promptLineCore(question);
 }
 
 async function promptRequired(question, errorLabel) {
-  const value = await promptLine(question);
-  if (!value) {
-    throw new Error(errorLabel);
-  }
-  return value;
+  return promptRequiredCore(question, errorLabel);
 }
 
 async function promptYesNo(question, defaultValue = false) {
-  const suffix = defaultValue ? " [Y/n] " : " [y/N] ";
-  const answer = (await promptLine(question + suffix)).toLowerCase();
-  if (!answer) {
-    return defaultValue;
-  }
-  if (answer === "y" || answer === "yes") {
-    return true;
-  }
-  if (answer === "n" || answer === "no") {
-    return false;
-  }
-  throw new Error("Please answer yes or no.");
+  return promptYesNoCore(question, defaultValue);
 }
 
 function printJson(value) {
@@ -2518,11 +2089,7 @@ function buildWizardHeader(state, title, description, extraLines = []) {
 }
 
 async function runPrompt(prompt) {
-  try {
-    return await prompt.run();
-  } catch {
-    return null;
-  }
+  return runPromptCore(prompt);
 }
 
 async function selectChoice({
@@ -2557,43 +2124,15 @@ async function selectChoice({
 }
 
 async function promptInputPrompt(message, initial = "") {
-  const value = await runPrompt(
-    new Input({
-      name: "value",
-      message,
-      initial,
-    }),
-  );
-  if (value == null) {
-    return null;
-  }
-  const trimmed = String(value).trim();
-  return trimmed || null;
+  return promptInputPromptCore(message, initial);
 }
 
 async function promptSecretPrompt(message) {
-  const value = await runPrompt(
-    new Password({
-      name: "value",
-      message,
-    }),
-  );
-  if (value == null) {
-    return null;
-  }
-  const trimmed = String(value).trim();
-  return trimmed || null;
+  return promptSecretPromptCore(message);
 }
 
 async function promptConfirmPrompt(message, initial = false) {
-  const value = await runPrompt(
-    new Confirm({
-      name: "value",
-      message,
-      initial,
-    }),
-  );
-  return value === true;
+  return promptConfirmPromptCore(message, initial);
 }
 
 function parseOptionValue(args, index, flag) {

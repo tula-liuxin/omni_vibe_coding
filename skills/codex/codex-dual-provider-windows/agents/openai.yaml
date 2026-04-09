@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Dual Provider Split"
-  short_description: "Maintain codex3_m as the third-party API key lane on Windows"
-  default_prompt: "Use $codex-dual-provider-windows to maintain codex3 and codex3_m as the isolated third-party API key lane on Windows."
+  short_description: "Separate official codex and codex3 third-party workflows"
+  default_prompt: "Use $codex-dual-provider-windows to keep codex official while codex3 uses a third-party provider on Windows."

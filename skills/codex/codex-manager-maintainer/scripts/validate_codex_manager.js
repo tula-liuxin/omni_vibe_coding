@@ -5,6 +5,14 @@ const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
+const {
+  filesMatch,
+  jsonFilesMatch,
+  pathExists,
+  readJson,
+  readPlainCodexModeState,
+  readText,
+} = require("../../_internal-codex-windows-core/scripts/validator-common.cjs");
 
 const PROFILE_KIND_CHATGPT = "chatgpt";
 const PROFILE_KIND_OFFICIAL_API_KEY = "official_api_key";
@@ -30,35 +38,6 @@ function resolveEffectiveCodexHome() {
     return process.env.CODEX_HOME;
   }
   return resolveOfficialHome();
-}
-
-function readText(filePath) {
-  return fs.readFileSync(filePath, "utf8");
-}
-
-function readJson(filePath) {
-  return JSON.parse(readText(filePath));
-}
-
-function pathExists(filePath) {
-  try {
-    return fs.existsSync(filePath);
-  } catch {
-    return false;
-  }
-}
-
-function readPlainCodexModeState(managerHome) {
-  const filePath = path.join(managerHome, "plain-codex-mode.json");
-  if (!pathExists(filePath)) {
-    return null;
-  }
-  try {
-    const parsed = readJson(filePath);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function inspectManagedKey(text, key) {
@@ -680,6 +659,24 @@ if (plainCodexMode === PLAIN_CODEX_MODE_THIRD_PARTY) {
     warnings.push(
       "forced_chatgpt_workspace_id is still present in official CLI config while no ChatGPT tuple is marked active.",
     );
+  }
+}
+
+if (plainCodexMode !== PLAIN_CODEX_MODE_THIRD_PARTY) {
+  if (!pathExists(officialAuthPath)) {
+    issues.push(`Desktop auth is missing while codex.exe should follow the official lane: ${officialAuthPath}`);
+  } else if (!pathExists(officialCliAuthPath)) {
+    issues.push(`Official CLI auth is missing while codex.exe should follow the official lane: ${officialCliAuthPath}`);
+  } else if (!jsonFilesMatch(officialAuthPath, officialCliAuthPath)) {
+    issues.push("Desktop auth.json does not match ~/.codex-official/auth.json.");
+  }
+
+  if (!pathExists(configPath)) {
+    issues.push(`Desktop config is missing while codex.exe should follow the official lane: ${configPath}`);
+  } else if (!pathExists(officialCliConfigPath)) {
+    issues.push(`Official CLI config is missing while codex.exe should follow the official lane: ${officialCliConfigPath}`);
+  } else if (!filesMatch(configPath, officialCliConfigPath)) {
+    issues.push("Desktop config.toml does not match ~/.codex-official/config.toml.");
   }
 }
 

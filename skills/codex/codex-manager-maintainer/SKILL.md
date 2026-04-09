@@ -1,6 +1,6 @@
 ---
 name: codex-manager-maintainer
-description: Maintain `codex_m` as the machine-local manager for official Codex identities. Use when Codex needs to install, repair, upgrade, or explain `codex_m`, switch the official identity that normal `codex`/Desktop should follow, preserve saved ChatGPT snapshots and official API key profiles, or keep the behavior portable across Windows, macOS, and Linux.
+description: Maintain `codex_m` as the machine-local Windows manager for official Codex identities. Use when Codex needs to install, repair, upgrade, or explain `codex_m`, switch the official identity that normal `codex`/Desktop should follow, or preserve saved ChatGPT snapshots and official API key profiles on Windows.
 ---
 
 # Codex Manager Maintainer
@@ -10,7 +10,7 @@ description: Maintain `codex_m` as the machine-local manager for official Codex 
 - Keep `codex_m` focused on the official Codex lane.
 - Treat saved official identities as durable user data.
 - Preserve behavior first, even when platform adapters change.
-- Keep public contract and platform-specific implementation separate.
+- Keep the public contract separate from the Windows implementation details.
 
 ## Stable Responsibilities
 
@@ -42,17 +42,14 @@ description: Maintain `codex_m` as the machine-local manager for official Codex 
 1. Run `scripts/detect_environment.js`.
 2. Read `references/common-contract.md`.
 3. Read `references/auth-and-state.md`.
-4. Read only the active platform reference:
-   - Windows: `references/windows-win11.md`
-   - Linux: `references/ubuntu-linux.md`
-   - macOS: `references/macos.md`
+4. Read `references/windows-win11.md`.
 5. Read `references/upstream-watchpoints.md` only when upstream Codex behavior appears to have drifted.
 6. Classify the task:
    - install `codex_m`
    - repair broken `codex_m`
    - upgrade an existing `codex_m`
    - explain or debug official identity behavior
-   - add or refine platform support
+   - refine the Windows adapter
 7. Validate behavior, not just file presence.
 
 ## Reading Rules
@@ -60,7 +57,7 @@ description: Maintain `codex_m` as the machine-local manager for official Codex 
 - Use `SKILL.md` for the stable function contract.
 - Use `references/common-contract.md` for public behavior shared across platforms.
 - Use `references/auth-and-state.md` for identity and carrier rules.
-- Use the platform reference for paths, wrapper mechanics, directory sharing, and installer/runtime details.
+- Use the Windows reference for paths, wrapper mechanics, directory sharing, and installer/runtime details.
 - Do not move Windows-specific path mechanics back into `SKILL.md`.
 
 ## Resources

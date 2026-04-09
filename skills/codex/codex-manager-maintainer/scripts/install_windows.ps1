@@ -9,97 +9,53 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not $SkillRoot) {
-  $ScriptRoot =
-    if ($PSScriptRoot) {
-      $PSScriptRoot
-    }
-    elseif ($PSCommandPath) {
-      Split-Path -Parent $PSCommandPath
-    }
-    elseif ($MyInvocation.MyCommand.Path) {
-      Split-Path -Parent $MyInvocation.MyCommand.Path
-    }
-    else {
-      (Get-Location).Path
-    }
-
-  $SkillRoot = (Resolve-Path (Join-Path $ScriptRoot "..")).Path
-}
-
-function Write-Utf8NoBom {
-  param(
-    [Parameter(Mandatory = $true)][string]$Path,
-    [Parameter(Mandatory = $true)][string]$Content
-  )
-
-  $encoding = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::WriteAllText($Path, $Content, $encoding)
-}
-
-function Require-Command {
-  param(
-    [Parameter(Mandatory = $true)][string]$Name
-  )
-
-  if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
-    throw "Required command not found: $Name"
+$BootstrapScriptRoot =
+  if ($PSScriptRoot) {
+    $PSScriptRoot
   }
-}
-
-$ResolvedSkillRoot = (Resolve-Path $SkillRoot).Path
-$AssetRoot = Join-Path $ResolvedSkillRoot "assets\\windows-runtime"
-$DefaultManagerHome = (Join-Path $env:USERPROFILE ".codex-manager")
-$OfficialCliHome = (Join-Path $env:USERPROFILE ".codex-official")
-$PlainCodexBridgeDir = (Join-Path $ManagerHome "plain-codex-bridge")
-
-foreach ($RequiredAsset in @("index.mjs", "package.json", "package-lock.json")) {
-  $AssetPath = Join-Path $AssetRoot $RequiredAsset
-  if (-not (Test-Path $AssetPath)) {
-    throw "Missing runtime asset: $AssetPath"
+  elseif ($PSCommandPath) {
+    Split-Path -Parent $PSCommandPath
   }
-}
-
-Require-Command -Name node
-if (-not $SkipNpmInstall) {
-  Require-Command -Name npm
-}
-
-if ($ManagerHome -ne $DefaultManagerHome) {
-  Write-Warning "The current Windows runtime still stores its state under $DefaultManagerHome. Changing -ManagerHome only changes where runtime files are installed, not the runtime's internal default state path."
-}
-
-New-Item -ItemType Directory -Force -Path $ManagerHome | Out-Null
-New-Item -ItemType Directory -Force -Path $LauncherDir | Out-Null
-New-Item -ItemType Directory -Force -Path $OfficialCliHome | Out-Null
-New-Item -ItemType Directory -Force -Path $PlainCodexBridgeDir | Out-Null
-
-Copy-Item -Path (Join-Path $AssetRoot "index.mjs") -Destination (Join-Path $ManagerHome "index.mjs") -Force
-Copy-Item -Path (Join-Path $AssetRoot "package.json") -Destination (Join-Path $ManagerHome "package.json") -Force
-Copy-Item -Path (Join-Path $AssetRoot "package-lock.json") -Destination (Join-Path $ManagerHome "package-lock.json") -Force
-
-if (-not $SkipNpmInstall) {
-  Push-Location $ManagerHome
-  try {
-    & npm install --omit=dev --no-fund --no-audit
-    if ($LASTEXITCODE -ne 0) {
-      throw "npm install failed with exit code $LASTEXITCODE"
-    }
+  elseif ($MyInvocation.MyCommand.Path) {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
   }
-  finally {
-    Pop-Location
+  else {
+    (Get-Location).Path
   }
-}
 
+$SharedScriptPath = Join-Path $BootstrapScriptRoot "..\..\_internal-codex-windows-core\scripts\install-shared.ps1"
+. (Resolve-Path $SharedScriptPath).Path
+
+$ResolvedSkillRoot = Get-ResolvedSkillRoot `
+  -SkillRoot $SkillRoot `
+  -PSScriptRootValue $PSScriptRoot `
+  -PSCommandPathValue $PSCommandPath `
+  -InvocationPathValue $MyInvocation.MyCommand.Path
+$SharedCoreRoot = Get-SharedCoreRoot -ResolvedSkillRoot $ResolvedSkillRoot
+$AssetRoot = Join-Path $ResolvedSkillRoot "assets\windows-runtime"
+
+$OfficialCliHome = Join-Path $env:USERPROFILE ".codex-official"
+$DesktopHome = Join-Path $env:USERPROFILE ".codex"
+$LegacyBridgeDir = Join-Path $ManagerHome "plain-codex-bridge"
 $EntryPath = Join-Path $ManagerHome "index.mjs"
 $Ps1LauncherPath = Join-Path $LauncherDir "$CommandName.ps1"
 $CmdLauncherPath = Join-Path $LauncherDir "$CommandName.cmd"
 $CodexPs1LauncherPath = Join-Path $LauncherDir "codex.ps1"
 $CodexCmdLauncherPath = Join-Path $LauncherDir "codex.cmd"
-$CodexPs1BackupPath = Join-Path $PlainCodexBridgeDir "upstream-codex.ps1"
-$CodexCmdBackupPath = Join-Path $PlainCodexBridgeDir "upstream-codex.cmd"
+$CodexPs1BackupPath = Join-Path $ManagerHome "upstream-codex.ps1"
+$CodexCmdBackupPath = Join-Path $ManagerHome "upstream-codex.cmd"
 
-$Ps1Content = @(
+Copy-ManagerRuntimeAssets -AssetRoot $AssetRoot -ManagerHome $ManagerHome -SharedCoreRoot $SharedCoreRoot
+Install-ManagerDependencies -ManagerHome $ManagerHome -SkipNpmInstall:$SkipNpmInstall
+
+New-Item -ItemType Directory -Force -Path $OfficialCliHome | Out-Null
+New-Item -ItemType Directory -Force -Path $DesktopHome | Out-Null
+
+if (Test-Path $LegacyBridgeDir) {
+  Remove-Item -LiteralPath $LegacyBridgeDir -Recurse -Force
+}
+
+$ManagerPs1 = @(
   "param(",
   "  [Parameter(ValueFromRemainingArguments = `$true)]",
   "  [string[]]`$ArgsFromCaller",
@@ -109,7 +65,7 @@ $Ps1Content = @(
   ""
 ) -join "`r`n"
 
-$CmdContent = @(
+$ManagerCmd = @(
   "@echo off",
   "setlocal",
   ('node "{0}" %*' -f $EntryPath),
@@ -117,8 +73,11 @@ $CmdContent = @(
   ""
 ) -join "`r`n"
 
-Write-Utf8NoBom -Path $Ps1LauncherPath -Content $Ps1Content
-Write-Utf8NoBom -Path $CmdLauncherPath -Content $CmdContent
+Write-NodeLauncherPair `
+  -LauncherDir $LauncherDir `
+  -CommandName $CommandName `
+  -Ps1Content $ManagerPs1 `
+  -CmdContent $ManagerCmd
 
 if ((Test-Path $CodexPs1LauncherPath) -and -not (Test-Path $CodexPs1BackupPath)) {
   Copy-Item -Path $CodexPs1LauncherPath -Destination $CodexPs1BackupPath -Force
@@ -128,7 +87,7 @@ if ((Test-Path $CodexCmdLauncherPath) -and -not (Test-Path $CodexCmdBackupPath))
   Copy-Item -Path $CodexCmdLauncherPath -Destination $CodexCmdBackupPath -Force
 }
 
-$CodexWrapperPs1Content = @(
+$CodexWrapperPs1 = @(
   "# codex_m managed official codex CLI wrapper",
   "param(",
   "  [Parameter(ValueFromRemainingArguments = `$true)]",
@@ -214,7 +173,7 @@ $CodexWrapperPs1Content = @(
   ""
 ) -join "`r`n"
 
-$CodexWrapperCmdContent = @(
+$CodexWrapperCmd = @(
   "@echo off",
   "setlocal",
   'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex.ps1" %*',
@@ -222,15 +181,16 @@ $CodexWrapperCmdContent = @(
   ""
 ) -join "`r`n"
 
-Write-Utf8NoBom -Path $CodexPs1LauncherPath -Content $CodexWrapperPs1Content
-Write-Utf8NoBom -Path $CodexCmdLauncherPath -Content $CodexWrapperCmdContent
+Write-Utf8NoBom -Path $CodexPs1LauncherPath -Content $CodexWrapperPs1
+Write-Utf8NoBom -Path $CodexCmdLauncherPath -Content $CodexWrapperCmd
 
 Write-Host "Installed codex_m runtime."
-Write-Host "Skill root : $ResolvedSkillRoot"
-Write-Host "Manager home: $ManagerHome"
-Write-Host "Launcher dir: $LauncherDir"
-Write-Host "PS1 launcher: $Ps1LauncherPath"
-Write-Host "CMD launcher: $CmdLauncherPath"
+Write-Host "Skill root       : $ResolvedSkillRoot"
+Write-Host "Manager home     : $ManagerHome"
+Write-Host "Launcher dir     : $LauncherDir"
 Write-Host "Official CLI home: $OfficialCliHome"
+Write-Host "Desktop home     : $DesktopHome"
+Write-Host "Manager PS1      : $Ps1LauncherPath"
+Write-Host "Manager CMD      : $CmdLauncherPath"
 Write-Host "Wrapped codex PS1: $CodexPs1LauncherPath"
 Write-Host "Wrapped codex CMD: $CodexCmdLauncherPath"

@@ -11,7 +11,7 @@ description: Maintain the Windows split setup where official Codex stays officia
 - Keep third-party auth/config isolated from the official lane.
 - Treat `codex3_m` as the manager for third-party API key profiles.
 - Keep session/history sharing as broad as safely possible without mixing auth carriers.
-- When a new provider tutorial should be tested safely, prefer a second parallel command/home pair such as `codex31` + `codex31_m` instead of rewriting the existing `codex3` lane in place.
+- The default third-party lane is `codex3` + `codex3_m`, using the `api111` API-key configuration shape.
 
 ## Stable Responsibilities
 
@@ -21,8 +21,7 @@ description: Maintain the Windows split setup where official Codex stays officia
 - applying the active third-party API key profile to `codex3`
 - making Desktop `codex.exe` follow the third-party lane when requested
 - maintaining the split Windows adapter where official and third-party auth/config remain separated
-
-Advanced provider settings such as provider mode, tutorial mapping, base URL, model, and wrapper reinstall remain supported, but they are advanced compatibility tools, not the primary public identity contract.
+- keeping the generated third-party config aligned with the current `api111` tutorial shape
 
 ## Public Contract
 
@@ -32,6 +31,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - `codex.exe to use` means "choose whether Desktop `codex.exe` should follow the active third-party lane".
 - On Windows, that Desktop-only contract assumes the managed plain `codex` launcher is pinned to `~/.codex-official`.
 - On current Windows builds, that managed launcher must also force the official provider/auth overrides for plain CLI launches; `CODEX_HOME` pinning alone is not a strong enough guarantee.
+- `Config` is the small settings surface for command/path/model details on the fixed `api111` lane.
 - Third-party auth/config remain isolated from the official lane.
 - Default shared state is limited to:
   - `sessions`
@@ -49,8 +49,7 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
    - install or repair
    - third-party API key profile management
    - `codex.exe to use` / Desktop follow-mode switching
-   - advanced provider compatibility (`provider` / `mode`)
-   - safe rollout of a new provider tutorial through a parallel lane such as `codex31`
+   - config or wrapper repair for the `codex3` lane
 5. Use bundled installers and validators when possible.
 6. Validate separation, sharing, and `codex.exe to use` behavior after changes.
 
@@ -59,22 +58,18 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - Use `SKILL.md` for the stable function contract.
 - Use `references/contract.md` for split-lane behavior and sharing rules.
 - Use `references/windows-win11.md` for current Windows paths, wrappers, and installer/runtime detail.
-- Keep provider tutorial mapping and wrapper mechanics out of `SKILL.md`.
+- Keep wrapper mechanics and Windows path details out of `SKILL.md`.
 
 ## Resources
 
 - `scripts/install_windows.ps1`
   Install or update `codex3_m` plus the Windows split-lane adapter.
-- `scripts/install_codex31_api111_windows.ps1`
-  Install the safe parallel `codex31` + `codex31_m` lane for the newer `api111` tutorial shape.
 - `scripts/install_codex3_wrapper.ps1`
   Install or update the `codex3` wrapper and session-sharing links.
 - `scripts/validate_codex3_manager.js`
   Validate saved third-party profiles, wrapper state, shared session targets, and `codex.exe to use` assumptions.
 - `assets/windows-runtime/`
   Current Windows runtime for `codex3_m`.
-- `references/codex31-api111-quickstart.md`
-  Minimal reproducible Windows path for installing the parallel `codex31` lane and verifying that plain `codex` still stays official.
 - `references/troubleshooting.md`
   Use for common split-lane failures and provider drift.
 
@@ -86,4 +81,5 @@ Advanced provider settings such as provider mode, tutorial mapping, base URL, mo
 - Do not allow `codex.exe to use` to run on Windows if the managed plain `codex` launcher is not pinned to `~/.codex-official`.
 - Do not expand third-party default sharing beyond `sessions`, `archived_sessions`, and `session_index.jsonl` unless the task explicitly requires it and safety is clear.
 - Do not live-share SQLite `state_5.sqlite*` files between official and third-party homes.
-- Do not silently ignore user-supplied provider tutorial values when advanced provider compatibility is the task.
+- Do not re-introduce multi-mode provider compatibility (`compat`, `stable-http`) into the public contract.
+- Do not expose protocol fields such as `model_provider`, provider table names, `wire_api`, or auth-carrier settings as everyday controls.

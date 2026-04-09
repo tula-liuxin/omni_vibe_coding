@@ -1,38 +1,39 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-let DatabaseSync = null;
-try {
-  ({ DatabaseSync } = require("node:sqlite"));
-} catch {
-  DatabaseSync = null;
-}
+const {
+  filesMatch,
+  jsonFilesMatch,
+  launcherDir,
+  officialCliHome,
+  officialHome,
+  pathExists,
+  readJson,
+  readPlainCodexModeState,
+  readText,
+  userHome,
+} = require("../../_internal-codex-windows-core/scripts/validator-common.cjs");
 
-function pathExists(filePath) {
-  try {
-    return fs.existsSync(filePath);
-  } catch {
-    return false;
-  }
-}
-
-function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
-function readText(filePath) {
-  return fs.readFileSync(filePath, "utf8");
-}
+const DEFAULT_PROVIDER = {
+  command_name: "codex3",
+  third_party_home: path.join(userHome(), ".codex-apikey"),
+  shared_codex_home: path.join(userHome(), ".codex"),
+  provider_name: "api111",
+  base_url: "https://api.xcode.best/v1",
+  model: "gpt-5-codex",
+  model_reasoning_effort: "high",
+  preferred_auth_method: "apikey",
+  model_context_window: 1000000,
+  model_auto_compact_token_limit: 900000,
+};
 
 function safeRealPath(filePath) {
   try {
-    if (typeof fs.realpathSync.native === "function") {
-      return fs.realpathSync.native(filePath);
-    }
-    return fs.realpathSync(filePath);
+    return typeof fs.realpathSync.native === "function"
+      ? fs.realpathSync.native(filePath)
+      : fs.realpathSync(filePath);
   } catch {
     return null;
   }
@@ -41,135 +42,17 @@ function safeRealPath(filePath) {
 function pathResolvesTo(filePath, targetPath) {
   const left = safeRealPath(filePath);
   const right = safeRealPath(targetPath);
-  if (!left || !right) {
-    return false;
-  }
-  return path.resolve(left) === path.resolve(right);
+  return Boolean(left && right && path.resolve(left) === path.resolve(right));
 }
 
-function filesShareIdentity(filePath, targetPath) {
+function filesShareIdentity(leftPath, rightPath) {
   try {
-    const left = fs.statSync(filePath);
-    const right = fs.statSync(targetPath);
-    return (
-      Number.isFinite(left.dev) &&
-      Number.isFinite(left.ino) &&
-      Number.isFinite(right.dev) &&
-      Number.isFinite(right.ino) &&
-      left.dev === right.dev &&
-      left.ino === right.ino
-    );
+    const left = fs.statSync(leftPath);
+    const right = fs.statSync(rightPath);
+    return left.dev === right.dev && left.ino === right.ino;
   } catch {
     return false;
   }
-}
-
-function inspectThreadIndex(homePath) {
-  const dbPath = path.join(homePath, "state_5.sqlite");
-  if (!pathExists(dbPath) || !DatabaseSync) {
-    return null;
-  }
-
-  function readSummary(openPath) {
-    let db = null;
-    try {
-      db = new DatabaseSync(openPath, { readonly: true });
-      const tableRow = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'threads'")
-        .get();
-      if (!tableRow) {
-        return null;
-      }
-
-      const threadCount = db.prepare("SELECT COUNT(*) AS count FROM threads").get()?.count ?? 0;
-      const cwdCounts = db
-        .prepare(
-          `
-            SELECT cwd, COUNT(*) AS count
-            FROM threads
-            GROUP BY cwd
-            ORDER BY count DESC, cwd ASC
-            LIMIT 3
-          `,
-        )
-        .all()
-        .map((row) => ({
-          cwd: row.cwd,
-          count: row.count,
-        }));
-
-      return {
-        dbPath,
-        inspectedPath: openPath,
-        threadCount,
-        cwdCounts,
-      };
-    } finally {
-      if (db) {
-        db.close();
-      }
-    }
-  }
-
-  try {
-    return readSummary(dbPath);
-  } catch (error) {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex3-thread-index-"));
-    const copiedDbPath = path.join(tmpDir, "state_5.sqlite");
-    try {
-      fs.copyFileSync(dbPath, copiedDbPath);
-      for (const suffix of ["-wal", "-shm"]) {
-        const sidecar = `${dbPath}${suffix}`;
-        if (pathExists(sidecar)) {
-          fs.copyFileSync(sidecar, `${copiedDbPath}${suffix}`);
-        }
-      }
-      return readSummary(copiedDbPath);
-    } catch (copiedError) {
-      return {
-        dbPath,
-        error: `${error.message}; copy retry failed: ${copiedError.message}`,
-      };
-    } finally {
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        // ignore cleanup failures in diagnostics
-      }
-    }
-  }
-}
-
-function usesBuiltInOpenAiProvider(provider) {
-  return String(provider?.provider_name || "").trim().toLowerCase() === "openai";
-}
-
-function effectiveOpenAiBaseUrl(provider) {
-  const trimmed = String(provider?.base_url || "").trim().replace(/\/+$/, "");
-  if (!trimmed) {
-    return "";
-  }
-  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
-}
-
-const PROVIDER_MODE_COMPAT = "compat";
-const PROVIDER_MODE_STABLE_HTTP = "stable_http";
-const DEFAULT_STABLE_HTTP_PROVIDER_ID = "sub2api";
-
-function normalizeProviderMode(value) {
-  const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
-  return normalized === PROVIDER_MODE_STABLE_HTTP
-    ? PROVIDER_MODE_STABLE_HTTP
-    : PROVIDER_MODE_COMPAT;
-}
-
-function normalizeProvider(provider = {}) {
-  const mode = normalizeProviderMode(provider.mode || PROVIDER_MODE_COMPAT);
-  return {
-    ...provider,
-    mode,
-    provider_name: mode === PROVIDER_MODE_COMPAT ? "openai" : DEFAULT_STABLE_HTTP_PROVIDER_ID,
-  };
 }
 
 function detectAuthKind(authData) {
@@ -182,45 +65,141 @@ function detectAuthKind(authData) {
   throw new Error("Unsupported auth.json shape.");
 }
 
-function normalizeProfile(profile, profileId) {
-  if (!profile || typeof profile !== "object") {
+function normalizeOptionalString(value) {
+  if (value == null) {
     return null;
   }
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
+function normalizeOptionalPositiveInteger(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
+function normalizeProvider(rawProvider = {}, tuning = {}) {
+  const provider = { ...DEFAULT_PROVIDER, ...(rawProvider || {}) };
+  const overrides = tuning && typeof tuning === "object" ? tuning : {};
   return {
-    ...profile,
-    profile_id: profile.profile_id || profileId,
+    command_name:
+      normalizeOptionalString(provider.command_name) || DEFAULT_PROVIDER.command_name,
+    third_party_home: path.resolve(
+      normalizeOptionalString(provider.third_party_home) || DEFAULT_PROVIDER.third_party_home,
+    ),
+    shared_codex_home: path.resolve(
+      normalizeOptionalString(provider.shared_codex_home) || DEFAULT_PROVIDER.shared_codex_home,
+    ),
+    provider_name: "api111",
+    base_url: normalizeOptionalString(provider.base_url) || DEFAULT_PROVIDER.base_url,
+    model:
+      normalizeOptionalString(overrides.model) ||
+      normalizeOptionalString(provider.model) ||
+      DEFAULT_PROVIDER.model,
+    review_model:
+      normalizeOptionalString(overrides.review_model) ||
+      normalizeOptionalString(provider.review_model),
+    model_reasoning_effort:
+      normalizeOptionalString(overrides.model_reasoning_effort) ||
+      normalizeOptionalString(provider.model_reasoning_effort) ||
+      DEFAULT_PROVIDER.model_reasoning_effort,
+    preferred_auth_method: "apikey",
+    model_context_window:
+      normalizeOptionalPositiveInteger(overrides.model_context_window) ||
+      normalizeOptionalPositiveInteger(provider.model_context_window) ||
+      DEFAULT_PROVIDER.model_context_window,
+    model_auto_compact_token_limit:
+      normalizeOptionalPositiveInteger(overrides.model_auto_compact_token_limit) ||
+      normalizeOptionalPositiveInteger(provider.model_auto_compact_token_limit) ||
+      DEFAULT_PROVIDER.model_auto_compact_token_limit,
   };
 }
 
-function readPlainCodexModeState(managerHome) {
-  const filePath = path.join(path.dirname(managerHome), ".codex-manager", "plain-codex-mode.json");
-  if (!pathExists(filePath)) {
-    return null;
+function getWindowsOpenAiApiKeyWarnings() {
+  const warnings = [];
+  if (process.env.OPENAI_API_KEY && String(process.env.OPENAI_API_KEY).trim()) {
+    warnings.push(
+      "OPENAI_API_KEY is set in the current process environment. The codex3 wrapper strips it for child runs, but new shells can still inherit it.",
+    );
   }
-  try {
-    const parsed = readJson(filePath);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
+
+  if (process.platform !== "win32") {
+    return warnings;
+  }
+
+  const result = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      '[PSCustomObject]@{ user = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("OPENAI_API_KEY","User")); machine = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("OPENAI_API_KEY","Machine")) } | ConvertTo-Json -Compress',
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+
+  if (result.status === 0 && result.stdout.trim()) {
+    try {
+      const parsed = JSON.parse(result.stdout.trim());
+      if (parsed.user) {
+        warnings.push("OPENAI_API_KEY is set at Windows User scope.");
+      }
+      if (parsed.machine) {
+        warnings.push("OPENAI_API_KEY is set at Windows Machine scope.");
+      }
+    } catch {
+      // ignore parse failures in diagnostics
+    }
+  }
+
+  return warnings;
+}
+
+function validateThirdPartyConfig(configText, provider, issues) {
+  const requiredSnippets = [
+    'model_provider = "api111"',
+    `model = "${provider.model}"`,
+    `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
+    'cli_auth_credentials_store = "file"',
+    'disable_response_storage = true',
+    'preferred_auth_method = "apikey"',
+    `model_context_window = ${provider.model_context_window}`,
+    `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
+    "[model_providers.api111]",
+    'name = "api111"',
+    `base_url = "${provider.base_url}"`,
+    'wire_api = "responses"',
+  ];
+
+  for (const snippet of requiredSnippets) {
+    if (!configText.includes(snippet)) {
+      issues.push(`Third-party config is missing expected setting: ${snippet}`);
+    }
+  }
+
+  if (provider.review_model && !configText.includes(`review_model = "${provider.review_model}"`)) {
+    issues.push(`Third-party config is missing expected setting: review_model = "${provider.review_model}"`);
   }
 }
 
 const jsonMode = process.argv.includes("--json");
 const managerHome = process.env.CODEX3_MANAGER_HOME
   ? path.resolve(process.env.CODEX3_MANAGER_HOME)
-  : path.join(os.homedir(), ".codex3-manager");
-const officialCliHome = path.join(os.homedir(), ".codex-official");
-const launcherDir =
-  process.platform === "win32"
-    ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
-    : path.join(os.homedir(), ".local", "bin");
+  : path.join(userHome(), ".codex3-manager");
+const launchers = launcherDir();
+const desktopHome = officialHome();
+const officialCli = officialCliHome();
+const officialManagerHome = path.join(userHome(), ".codex-manager");
+const plainCodexModeState = readPlainCodexModeState(officialManagerHome);
+const plainCodexMode = plainCodexModeState?.mode || "official";
 
 const issues = [];
-const warnings = [];
-const sharedSessionRelativePaths = ["sessions", "archived_sessions"];
-const sharedSessionIndexFile = "session_index.jsonl";
-const plainCodexModeState = readPlainCodexModeState(managerHome);
-const plainCodexMode = plainCodexModeState?.mode || "official";
+const warnings = getWindowsOpenAiApiKeyWarnings();
 
 for (const runtimeFile of [
   path.join(managerHome, "index.mjs"),
@@ -234,53 +213,34 @@ for (const runtimeFile of [
 }
 
 for (const launcherFile of [
-  path.join(launcherDir, "codex3_m.ps1"),
-  path.join(launcherDir, "codex3_m.cmd"),
+  path.join(launchers, "codex3_m.ps1"),
+  path.join(launchers, "codex3_m.cmd"),
+  path.join(launchers, "codex.ps1"),
+  path.join(launchers, "codex.cmd"),
 ]) {
   if (!pathExists(launcherFile)) {
-    issues.push(`Missing manager launcher: ${launcherFile}`);
+    issues.push(`Missing launcher: ${launcherFile}`);
   }
 }
 
-if (process.platform === "win32") {
-  const codexPs1Path = path.join(launcherDir, "codex.ps1");
-  const codexCmdPath = path.join(launcherDir, "codex.cmd");
-
-  for (const launcherFile of [codexPs1Path, codexCmdPath]) {
-    if (!pathExists(launcherFile)) {
-      issues.push(`Missing managed plain codex launcher: ${launcherFile}`);
-    }
+const codexPs1Path = path.join(launchers, "codex.ps1");
+const codexCmdPath = path.join(launchers, "codex.cmd");
+if (pathExists(codexPs1Path)) {
+  const text = readText(codexPs1Path);
+  if (!text.includes("CODEX_HOME") || !text.includes(officialCli)) {
+    issues.push(`codex.ps1 does not pin CODEX_HOME to ${officialCli}.`);
   }
-
-  if (pathExists(codexPs1Path)) {
-    const codexPs1Text = readText(codexPs1Path);
-    if (!codexPs1Text.includes("CODEX_HOME") || !codexPs1Text.includes(officialCliHome)) {
-      issues.push(`codex.ps1 does not pin CODEX_HOME to ${officialCliHome}.`);
-    }
-    if (
-      !codexPs1Text.includes('model_provider="openai"') ||
-      !codexPs1Text.includes('cli_auth_credentials_store="file"')
-    ) {
-      issues.push(
-        "codex.ps1 does not inject the managed official provider/auth overrides for plain codex launches.",
-      );
-    }
-    if (
-      !codexPs1Text.includes("Remove-Item Env:OPENAI_API_KEY") ||
-      !codexPs1Text.includes("Remove-Item Env:OPENAI_BASE_URL")
-    ) {
-      issues.push("codex.ps1 does not clear OPENAI_* environment overrides before launching plain codex.");
-    }
+  if (
+    !text.includes('model_provider="openai"') ||
+    !text.includes('cli_auth_credentials_store="file"')
+  ) {
+    issues.push("codex.ps1 does not inject the managed official provider/auth overrides.");
   }
-
-  if (pathExists(codexCmdPath)) {
-    const codexCmdText = readText(codexCmdPath);
-    if (
-      !codexCmdText.includes("codex.ps1") ||
-      !codexCmdText.includes("ExecutionPolicy Bypass")
-    ) {
-      issues.push("codex.cmd does not delegate to the managed codex.ps1 wrapper.");
-    }
+}
+if (pathExists(codexCmdPath)) {
+  const text = readText(codexCmdPath);
+  if (!text.includes("codex.ps1") || !text.includes("ExecutionPolicy Bypass")) {
+    issues.push("codex.cmd does not delegate to the managed codex.ps1 wrapper.");
   }
 }
 
@@ -289,9 +249,6 @@ let state = null;
 if (pathExists(statePath)) {
   try {
     state = readJson(statePath);
-    if (!state.profiles || typeof state.profiles !== "object") {
-      state.profiles = {};
-    }
   } catch (error) {
     issues.push(`Invalid state JSON: ${statePath} (${error.message})`);
   }
@@ -299,55 +256,29 @@ if (pathExists(statePath)) {
   warnings.push(`State file not found: ${statePath}`);
 }
 
-let provider = {
-  command_name: "codex3",
-  third_party_home: path.join(os.homedir(), ".codex-apikey"),
-  shared_codex_home: path.join(os.homedir(), ".codex"),
-  mode: PROVIDER_MODE_COMPAT,
-  provider_name: "openai",
-  base_url: "https://sub.aimizy.com",
-  model: "gpt-5.4",
-  review_model: "gpt-5.4",
-  model_reasoning_effort: "xhigh",
-  model_context_window: 1000000,
-  model_auto_compact_token_limit: 900000,
-};
-
-if (state?.provider && typeof state.provider === "object") {
-  provider = normalizeProvider({
-    ...provider,
-    ...state.provider,
-  });
+if (state && (!state.profiles || typeof state.profiles !== "object")) {
+  issues.push(`State file has an unexpected profiles shape: ${statePath}`);
 }
 
+const provider = normalizeProvider(state?.provider || {}, state?.tuning || {});
+
 for (const wrapperFile of [
-  path.join(launcherDir, `${provider.command_name}.ps1`),
-  path.join(launcherDir, `${provider.command_name}.cmd`),
+  path.join(launchers, `${provider.command_name}.ps1`),
+  path.join(launchers, `${provider.command_name}.cmd`),
 ]) {
   if (!pathExists(wrapperFile)) {
     issues.push(`Missing third-party wrapper launcher: ${wrapperFile}`);
   }
 }
 
-if (process.env.OPENAI_API_KEY && String(process.env.OPENAI_API_KEY).trim()) {
-  warnings.push(
-    "OPENAI_API_KEY is set in the current process environment. The wrapper removes it for child runs, but new shells may still inherit it.",
-  );
+if (path.resolve(provider.third_party_home) === path.resolve(desktopHome)) {
+  issues.push("third_party_home resolves to ~/.codex, which would mix auth storage with Desktop state.");
 }
-
-if (path.resolve(provider.third_party_home) === path.resolve(path.join(os.homedir(), ".codex"))) {
-  issues.push("third_party_home resolves to ~/.codex, which would mix third-party auth storage with the shared Codex home.");
-}
-
 if (path.resolve(provider.third_party_home) === path.resolve(provider.shared_codex_home)) {
-  issues.push("third_party_home matches shared_codex_home, so third-party auth would leak into the shared Codex state.");
+  issues.push("third_party_home matches shared_codex_home, so third-party auth would leak into shared state.");
 }
 
-if (!pathExists(provider.shared_codex_home)) {
-  warnings.push(`Shared Codex home does not exist yet: ${provider.shared_codex_home}`);
-}
-
-for (const relativePath of sharedSessionRelativePaths) {
+for (const relativePath of ["sessions", "archived_sessions"]) {
   const targetPath = path.join(provider.shared_codex_home, relativePath);
   const linkPath = path.join(provider.third_party_home, relativePath);
   if (!pathExists(targetPath)) {
@@ -359,30 +290,36 @@ for (const relativePath of sharedSessionRelativePaths) {
     continue;
   }
   if (!pathResolvesTo(linkPath, targetPath)) {
-    issues.push(
-      `Shared session path does not resolve to the shared Codex home: ${linkPath} -> ${targetPath}`,
-    );
+    issues.push(`Shared session path does not resolve to the shared Codex home: ${linkPath} -> ${targetPath}`);
   }
 }
 
-if (state && state.profiles && typeof state.profiles === "object") {
+const sessionIndexTargetPath = path.join(provider.shared_codex_home, "session_index.jsonl");
+const sessionIndexLinkPath = path.join(provider.third_party_home, "session_index.jsonl");
+if (!pathExists(sessionIndexTargetPath)) {
+  warnings.push(`Shared session index target does not exist yet: ${sessionIndexTargetPath}`);
+} else if (!pathExists(sessionIndexLinkPath)) {
+  issues.push(`Shared session index is missing from third-party home: ${sessionIndexLinkPath}`);
+} else if (!filesShareIdentity(sessionIndexLinkPath, sessionIndexTargetPath)) {
+  issues.push(
+    `Shared session index is not hard-linked to the shared Codex home: ${sessionIndexLinkPath} -> ${sessionIndexTargetPath}`,
+  );
+}
+
+if (state?.profiles && typeof state.profiles === "object") {
   for (const [profileId, rawProfile] of Object.entries(state.profiles)) {
-    const profile = normalizeProfile(rawProfile, profileId);
-    if (!profile) {
-      issues.push(`Invalid profile entry: ${profileId}`);
-      continue;
-    }
-    const authPath = path.join(managerHome, "profiles", profile.profile_id, "auth.json");
+    const savedId = rawProfile?.profile_id || profileId;
+    const authPath = path.join(managerHome, "profiles", savedId, "auth.json");
     if (!pathExists(authPath)) {
-      issues.push(`Missing saved auth for profile ${profile.profile_id}: ${authPath}`);
+      issues.push(`Missing saved auth for profile ${savedId}: ${authPath}`);
       continue;
     }
     try {
       if (detectAuthKind(readJson(authPath)) !== "apikey") {
-        issues.push(`Saved auth is not API key auth for profile ${profile.profile_id}`);
+        issues.push(`Saved auth is not API key auth for profile ${savedId}.`);
       }
     } catch (error) {
-      issues.push(`Invalid saved auth for profile ${profile.profile_id}: ${error.message}`);
+      issues.push(`Invalid saved auth for profile ${savedId}: ${error.message}`);
     }
   }
 }
@@ -393,39 +330,11 @@ const thirdPartyConfigPath = path.join(provider.third_party_home, "config.toml")
 if (!pathExists(thirdPartyConfigPath)) {
   issues.push(`Missing third-party config: ${thirdPartyConfigPath}`);
 } else {
-  const configText = readText(thirdPartyConfigPath);
-  const requiredSnippets = usesBuiltInOpenAiProvider(provider)
-    ? [
-        'cli_auth_credentials_store = "file"',
-        'model_provider = "openai"',
-        `openai_base_url = "${effectiveOpenAiBaseUrl(provider)}"`,
-        `model = "${provider.model}"`,
-        `review_model = "${provider.review_model}"`,
-        `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
-        `model_context_window = ${provider.model_context_window}`,
-        `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
-      ]
-      : [
-        'cli_auth_credentials_store = "file"',
-        `model_provider = "${provider.provider_name}"`,
-        `model = "${provider.model}"`,
-        `review_model = "${provider.review_model}"`,
-        `model_reasoning_effort = "${provider.model_reasoning_effort}"`,
-        `model_context_window = ${provider.model_context_window}`,
-        `model_auto_compact_token_limit = ${provider.model_auto_compact_token_limit}`,
-        `base_url = "${provider.base_url}"`,
-        "requires_openai_auth = true",
-        "supports_websockets = false",
-      ];
-  for (const snippet of requiredSnippets) {
-    if (!configText.includes(snippet)) {
-      issues.push(`Third-party config is missing expected setting: ${snippet}`);
-    }
-  }
+  validateThirdPartyConfig(readText(thirdPartyConfigPath), provider, issues);
 }
 
 if (state?.active_profile_id) {
-  if (!state.profiles[state.active_profile_id]) {
+  if (!state.profiles?.[state.active_profile_id]) {
     issues.push(`active_profile_id points to a missing profile: ${state.active_profile_id}`);
   }
   if (!pathExists(thirdPartyAuthPath)) {
@@ -441,83 +350,24 @@ if (state?.active_profile_id) {
   }
 }
 
-const wrapperPs1Path = path.join(launcherDir, `${provider.command_name}.ps1`);
-if (pathExists(wrapperPs1Path)) {
-  const wrapperText = readText(wrapperPs1Path);
-  if (!wrapperText.includes("previousCodexHome")) {
-    warnings.push("Wrapper ps1 does not appear to restore CODEX_HOME.");
-  }
-  if (!wrapperText.includes("previousOpenAiApiKey")) {
-    warnings.push("Wrapper ps1 does not appear to restore OPENAI_API_KEY.");
-  }
-  if (!wrapperText.includes("Remove-Item Env:OPENAI_API_KEY")) {
-    warnings.push("Wrapper ps1 does not appear to remove inherited OPENAI_API_KEY during child runs.");
-  }
-}
-
-const sessionIndexTargetPath = path.join(provider.shared_codex_home, sharedSessionIndexFile);
-const sessionIndexLinkPath = path.join(provider.third_party_home, sharedSessionIndexFile);
-if (!pathExists(sessionIndexTargetPath)) {
-  warnings.push(`Shared session index target does not exist yet: ${sessionIndexTargetPath}`);
-} else if (!pathExists(sessionIndexLinkPath)) {
-  issues.push(`Shared session index is missing from third-party home: ${sessionIndexLinkPath}`);
-} else if (!filesShareIdentity(sessionIndexLinkPath, sessionIndexTargetPath)) {
-  issues.push(
-    `Shared session index is not hard-linked to the shared Codex home: ${sessionIndexLinkPath} -> ${sessionIndexTargetPath}`,
-  );
-}
-
-const thirdPartyThreadIndex = inspectThreadIndex(provider.third_party_home);
-if (thirdPartyThreadIndex?.error) {
-  warnings.push(
-    `Could not inspect third-party thread index at ${thirdPartyThreadIndex.dbPath}: ${thirdPartyThreadIndex.error}`,
-  );
-} else if (thirdPartyThreadIndex?.threadCount > 0) {
-  warnings.push(
-    "Recent Codex builds keep sidebar/thread metadata in state_5.sqlite per CODEX_HOME. codex3 can therefore have a separate thread list even when sessions, archived_sessions, and session_index.jsonl are shared.",
-  );
-  if (thirdPartyThreadIndex.cwdCounts.length > 0) {
-    const samples = thirdPartyThreadIndex.cwdCounts
-      .map((entry) => `${entry.cwd} (${entry.count})`)
-      .join(", ");
-    warnings.push(
-      `Current codex3 thread cwd samples from ${thirdPartyThreadIndex.dbPath}: ${samples}. Workspace-filtered sidebars only show threads whose cwd matches the active workspace.`,
-    );
-  }
-}
-
-if (process.platform === "win32") {
-  const result = spawnSync(
-    "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      '[PSCustomObject]@{ user = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("OPENAI_API_KEY","User")); machine = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("OPENAI_API_KEY","Machine")) } | ConvertTo-Json -Compress',
-    ],
-    {
-      encoding: "utf8",
-      windowsHide: true,
-    },
-  );
-
-  if (result.status === 0 && result.stdout.trim()) {
-    try {
-      const parsed = JSON.parse(result.stdout.trim());
-      if (parsed.user) {
-        warnings.push("OPENAI_API_KEY is set at Windows User scope.");
-      }
-      if (parsed.machine) {
-        warnings.push("OPENAI_API_KEY is set at Windows Machine scope.");
-      }
-    } catch {
-      // ignore parse failures
-    }
-  }
-}
-
 if (plainCodexMode === "third_party") {
+  const desktopAuthPath = path.join(desktopHome, "auth.json");
+  const desktopConfigPath = path.join(desktopHome, "config.toml");
+
+  if (!pathExists(desktopAuthPath)) {
+    issues.push(`Desktop auth is missing while codex.exe should follow the third-party lane: ${desktopAuthPath}`);
+  } else if (!jsonFilesMatch(desktopAuthPath, thirdPartyAuthPath)) {
+    issues.push("Desktop auth.json does not match the active third-party auth.json.");
+  }
+
+  if (!pathExists(desktopConfigPath)) {
+    issues.push(`Desktop config is missing while codex.exe should follow the third-party lane: ${desktopConfigPath}`);
+  } else if (!filesMatch(desktopConfigPath, thirdPartyConfigPath)) {
+    issues.push("Desktop config.toml does not match the active third-party config.toml.");
+  }
+} else {
   warnings.push(
-    `Desktop is currently following the third-party lane. The plain codex CLI should still stay on ${officialCliHome} via the managed codex launcher.`,
+    `Desktop is currently following the official lane. Third-party mirror checks are skipped until you switch with codex3_m use-codex3.`,
   );
 }
 
@@ -525,10 +375,12 @@ const payload = {
   ok: issues.length === 0,
   issues,
   warnings,
+  provider,
   paths: {
     managerHome,
-    launcherDir,
-    officialCliHome,
+    launcherDir: launchers,
+    officialCliHome: officialCli,
+    desktopHome,
     thirdPartyHome: provider.third_party_home,
     sharedCodexHome: provider.shared_codex_home,
   },
@@ -537,7 +389,7 @@ const payload = {
 
 if (jsonMode) {
   console.log(JSON.stringify(payload, null, 2));
-} else if (issues.length === 0) {
+} else if (!issues.length) {
   console.log("No blocking issues found for the third-party lane.");
   warnings.forEach((warning) => console.log(`Warning: ${warning}`));
 } else {
