@@ -65,6 +65,10 @@ const OFFICIAL_API_KEYS_DIR = path.join(MANAGER_HOME, "official-api-keys");
 const BACKUPS_DIR = path.join(MANAGER_HOME, "backups");
 const TMP_DIR = path.join(MANAGER_HOME, "tmp");
 const PLAIN_CODEX_MODE_STATE_PATH = path.join(MANAGER_HOME, "plain-codex-mode.json");
+const LAUNCHER_DIR =
+  process.platform === "win32"
+    ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm")
+    : path.join(os.homedir(), ".local", "bin");
 
 const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
 const OFFICIAL_AUTH_PATH = path.join(OFFICIAL_HOME, "auth.json");
@@ -103,6 +107,60 @@ function ensureOfficialCliHomeLayout() {
       path.join(OFFICIAL_CLI_HOME, relativePath),
       path.join(OFFICIAL_HOME, relativePath),
     );
+  }
+}
+
+function resolveUpstreamCodexBinPath() {
+  const candidates = [];
+
+  if (process.platform === "win32") {
+    candidates.push(path.join(LAUNCHER_DIR, "node_modules", "@openai", "codex", "bin", "codex.js"));
+  }
+
+  if (process.env.npm_config_prefix) {
+    const npmPrefix = path.resolve(process.env.npm_config_prefix);
+    candidates.push(
+      process.platform === "win32"
+        ? path.join(npmPrefix, "node_modules", "@openai", "codex", "bin", "codex.js")
+        : path.join(npmPrefix, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"),
+    );
+  }
+
+  const resolved = candidates.find((candidate) => pathExists(candidate));
+  if (!resolved) {
+    throw new Error(
+      `Unable to locate upstream @openai/codex at the expected global install paths. Checked: ${candidates.join(", ")}`,
+    );
+  }
+  return resolved;
+}
+
+function runFreshOfficialLogin(captureHome) {
+  const env = {
+    ...process.env,
+    CODEX_HOME: captureHome,
+  };
+  delete env.OPENAI_API_KEY;
+  delete env.OPENAI_BASE_URL;
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      resolveUpstreamCodexBinPath(),
+      "login",
+      "-c",
+      'model_provider="openai"',
+      "-c",
+      'cli_auth_credentials_store="file"',
+    ],
+    {
+      env,
+      stdio: "inherit",
+    },
+  );
+
+  if (result.status !== 0) {
+    throw new Error(`codex login exited with status ${result.status ?? "unknown"}.`);
   }
 }
 
@@ -1673,14 +1731,50 @@ function getDesktopAuthKind() {
 function doctorReport(state) {
   const issues = [];
   const warnings = [];
-  const launcherDir = path.join(process.env.APPDATA || "", "npm");
   const activeProfile = getActiveOfficialProfile(state);
 
-  if (!fs.existsSync(path.join(launcherDir, "codex_m.cmd"))) {
+  if (!fs.existsSync(path.join(LAUNCHER_DIR, "codex_m.cmd"))) {
     issues.push("Launcher missing: %APPDATA%\\npm\\codex_m.cmd");
   }
-  if (!fs.existsSync(path.join(launcherDir, "codex_m.ps1"))) {
+  if (!fs.existsSync(path.join(LAUNCHER_DIR, "codex_m.ps1"))) {
     issues.push("Launcher missing: %APPDATA%\\npm\\codex_m.ps1");
+  }
+  if (!fs.existsSync(path.join(LAUNCHER_DIR, "codex.cmd"))) {
+    issues.push("Launcher missing: %APPDATA%\\npm\\codex.cmd");
+  }
+  if (!fs.existsSync(path.join(LAUNCHER_DIR, "codex.ps1"))) {
+    issues.push("Launcher missing: %APPDATA%\\npm\\codex.ps1");
+  } else {
+    const codexPs1Text = readText(path.join(LAUNCHER_DIR, "codex.ps1"));
+    if (!codexPs1Text.includes("codex_m managed official codex CLI wrapper")) {
+      issues.push("codex.ps1 is not the managed official CLI wrapper.");
+    }
+    if (!codexPs1Text.includes("CODEX_HOME") || !codexPs1Text.includes(OFFICIAL_CLI_HOME)) {
+      issues.push(`codex.ps1 does not pin CODEX_HOME to ${OFFICIAL_CLI_HOME}.`);
+    }
+    if (
+      !codexPs1Text.includes('model_provider="openai"') ||
+      !codexPs1Text.includes('cli_auth_credentials_store="file"')
+    ) {
+      issues.push(
+        "codex.ps1 does not inject the managed official provider/auth overrides for plain codex launches.",
+      );
+    }
+    if (
+      !codexPs1Text.includes("Remove-Item Env:OPENAI_API_KEY") ||
+      !codexPs1Text.includes("Remove-Item Env:OPENAI_BASE_URL")
+    ) {
+      issues.push("codex.ps1 does not clear OPENAI_* environment overrides before launching Codex.");
+    }
+  }
+  if (fs.existsSync(path.join(LAUNCHER_DIR, "codex.cmd"))) {
+    const codexCmdText = readText(path.join(LAUNCHER_DIR, "codex.cmd"));
+    if (
+      !codexCmdText.includes("codex.ps1") ||
+      !codexCmdText.includes("ExecutionPolicy Bypass")
+    ) {
+      issues.push("codex.cmd does not delegate to the managed codex.ps1 wrapper.");
+    }
   }
 
   if (process.env.OPENAI_API_KEY && String(process.env.OPENAI_API_KEY).trim()) {
@@ -2870,18 +2964,7 @@ async function handleCapture(args) {
   console.log(captureHome);
   console.log("");
 
-  const result = spawnSync("codex", ["login"], {
-    env: {
-      ...process.env,
-      CODEX_HOME: captureHome,
-    },
-    stdio: "inherit",
-    shell: true,
-  });
-
-  if (result.status !== 0) {
-    throw new Error(`codex login exited with status ${result.status ?? "unknown"}.`);
-  }
+  runFreshOfficialLogin(captureHome);
 
   const authPath = path.join(captureHome, "auth.json");
   if (!fs.existsSync(authPath)) {
@@ -3821,18 +3904,7 @@ async function runLoginPage() {
       console.log(captureHome);
       console.log("");
 
-      const result = spawnSync("codex", ["login"], {
-        env: {
-          ...process.env,
-          CODEX_HOME: captureHome,
-        },
-        stdio: "inherit",
-        shell: true,
-      });
-
-      if (result.status !== 0) {
-        throw new Error(`codex login exited with status ${result.status ?? "unknown"}.`);
-      }
+      runFreshOfficialLogin(captureHome);
 
       const authPath = path.join(captureHome, "auth.json");
       if (!fs.existsSync(authPath)) {

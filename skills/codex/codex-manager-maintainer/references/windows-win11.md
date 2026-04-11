@@ -53,6 +53,8 @@ Expected:
 - managed config keys remain top-level.
 - Home shows official ChatGPT and official API key management.
 - `codex.exe` is described as Desktop follow-mode, not launcher replacement.
+- `Login` uses the upstream `@openai/codex/bin/codex.js` entrypoint for temporary capture flows instead of recursively going through the managed plain `codex` wrapper.
+- temporary capture login clears inherited `OPENAI_API_KEY` and `OPENAI_BASE_URL` and forces `cli_auth_credentials_store="file"` so the authorization URL does not inherit a stale `allowed_workspace_id`.
 
 ## Windows Guardrails
 
@@ -63,3 +65,4 @@ Expected:
 - Do not present `.codex-official` as a permanent cross-platform requirement.
 - Do not claim Desktop-only follow-mode unless the plain `codex` wrapper still points at `.codex-official`.
 - Do not treat `CODEX_HOME` pinning by itself as sufficient proof that plain `codex` is isolated; the launcher must also force the official provider/auth overrides.
+- Do not route temporary login capture through the managed plain `codex` wrapper on Windows; call the upstream CLI entrypoint directly with explicit official overrides.
