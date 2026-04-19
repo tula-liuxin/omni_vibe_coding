@@ -63,6 +63,34 @@
   - 官方模式：`~/.codex-official` -> `~/.codex`
   - 第三方模式：`~/.codex-apikey` -> `~/.codex`
 
+## Shared Substrate 速记
+
+当前 Windows 双链路不是“一套配置文件只换 auth”，而是“共享 substrate + lane 专属 auth/provider 配置”。
+
+默认共享到 `%USERPROFILE%\.codex-shared` 的是：
+
+- `sessions`
+- `archived_sessions`
+- `skills`
+- `memories`
+- `rules`
+- `vendor_imports`
+- `session_index.jsonl`
+- `.codex-shared\config` 下的 shared MCP/MCP OAuth/project config fragments
+
+默认不共享的是：
+
+- 官方与第三方 auth carriers
+- `model_provider` / `[model_providers.*]` 这类 lane-owned provider sections
+- managed top-level provider/auth keys
+- lane homes 本身，例如 `~/.codex-official`、`~/.codex-apikey`
+- SQLite sidebar/thread 数据库，例如 `state_5.sqlite*`
+
+唯一例外是 Desktop follow-mode bridge：
+
+- `codex.exe` 可以显式跟随官方或第三方 lane
+- 这属于 bridge 行为，不属于 substrate 的默认共享
+
 ## 安装与部署
 
 仓库里的目录是 source。真正给本机 Codex 使用时，通常会把这些目录同步到：

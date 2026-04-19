@@ -54,5 +54,8 @@
   - `session_index.jsonl`
 - Shared MCP server, MCP OAuth top-level settings, and project config fragments live under `.codex-shared\config` and are merged into generated lane configs.
 - The goal is switching-cost agnosticism: changing a `codex3_m` API key profile should not require reconfiguring MCP, project trust/config, skills, memories, rules, or session discovery.
+- Switching-cost agnosticism does not mean the official and third-party lanes use one identical config file; each lane still owns its provider/auth shape.
+- The substrate shares safe state and config fragments, while auth carriers, lane-owned provider tables, managed top-level provider/auth keys, and lane homes stay isolated.
+- `codex.exe to use` is the only supported bridge that may intentionally mirror one lane into the Desktop lane.
 - Do not live-share SQLite sidebar/thread databases.
 - If the thread list needs to align across lanes, use sync/backfill instead of SQLite live-sharing.

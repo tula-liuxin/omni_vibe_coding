@@ -40,6 +40,35 @@ description: Maintain `codex_m` as the machine-local Windows manager for officia
 - On Windows, shared state is centralized in `%USERPROFILE%\.codex-shared` and linked into official homes.
 - SQLite thread/sidebar databases must not be live-shared across homes; sync or backfill is acceptable.
 
+## Shared Substrate Boundary
+
+The shared substrate is a shared state layer, not a single official/third-party config file with only the auth changed.
+
+Shared via `%USERPROFILE%\.codex-shared`:
+
+- `sessions`
+- `archived_sessions`
+- `skills`
+- `memories`
+- `rules`
+- `vendor_imports`
+- `session_index.jsonl`
+- shared config fragments under `.codex-shared\config`, including shared MCP server config, MCP OAuth top-level settings, and project trust/config fragments
+
+Isolated from shared state:
+
+- official auth carriers and saved identity files
+- third-party auth carriers and third-party provider-owned config
+- lane-owned provider sections such as `model_provider = "openai"` / `model_provider = "api111"` and `[model_providers.*]`
+- managed top-level provider/auth keys
+- the lane homes themselves
+- SQLite sidebar/thread databases such as `state_5.sqlite*`
+
+Bridge-only exception:
+
+- Desktop follow-mode may temporarily mirror one lane into the Desktop lane
+- that bridge is explicit mode switching, not default substrate sharing
+
 ## Workflow
 
 1. Run `scripts/detect_environment.js`.

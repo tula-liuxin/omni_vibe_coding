@@ -48,6 +48,34 @@ description: Maintain the Windows split setup where official Codex stays officia
 - SQLite sidebar/thread databases must not be live-shared.
 - If sidebar/thread views need alignment, use synchronization or backfill instead of direct SQLite sharing.
 
+## Shared Substrate Boundary
+
+The shared substrate is not "one single config file with different auth". It is a shared state layer plus lane-specific generated configs.
+
+Shared via `%USERPROFILE%\.codex-shared`:
+
+- `sessions`
+- `archived_sessions`
+- `skills`
+- `memories`
+- `rules`
+- `vendor_imports`
+- `session_index.jsonl`
+- shared config fragments under `.codex-shared\config`, such as MCP server config, MCP OAuth top-level settings, and project trust/config fragments
+
+Isolated per lane:
+
+- auth carriers such as ChatGPT login snapshots, official API key profiles, and third-party `auth.json`
+- lane-owned provider sections such as `model_provider = "openai"` / `model_provider = "api111"` and `[model_providers.*]`
+- managed top-level provider/auth keys that belong to one lane
+- the lane homes themselves, such as `~/.codex-official` and `~/.codex-apikey`
+- SQLite sidebar/thread databases such as `state_5.sqlite*`
+
+Bridge-only exception:
+
+- `codex.exe to use` may copy the active lane into the Desktop lane on purpose
+- this is an explicit bridge operation, not default substrate sharing
+
 ## Workflow
 
 1. Read `references/contract.md`.

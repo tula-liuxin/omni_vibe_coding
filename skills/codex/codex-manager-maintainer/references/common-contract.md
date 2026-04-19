@@ -27,6 +27,9 @@
 - Share safe session/history/thread metadata, MCP/project config, skills, memories, rules, and vendor imports as much as practical.
 - Keep auth carriers and managed provider config keys distinct from shared state.
 - Switching an official identity should not force the user to reconfigure MCP servers, project trust/config, skills, memories, rules, or session discovery.
+- That switching-cost contract does not mean the official and third-party lanes collapse into one identical config file.
+- Shared substrate scope is limited to safe state and shared config fragments; provider-owned sections, auth carriers, lane homes, and SQLite thread databases remain isolated.
+- Desktop follow-mode is a bridge operation, not evidence that the substrate itself is sharing auth/provider state.
 - Do not model switching as whole-home replacement.
 - Do not live-share SQLite sidebar/thread databases between homes.
 - If thread/sidebar views need alignment, use synchronization or backfill instead of direct SQLite sharing.
