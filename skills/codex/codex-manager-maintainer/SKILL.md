@@ -9,6 +9,7 @@ description: Maintain `codex_m` as the machine-local Windows manager for officia
 
 - Keep `codex_m` focused on the official Codex lane.
 - Treat saved official identities as durable user data.
+- Keep shared MCP/project config, sessions, skills, memories, rules, and vendor imports stable when switching between `codex_m`, `codex3_m`, and their API/account profiles.
 - Preserve behavior first, even when platform adapters change.
 - Keep the public contract separate from the Windows implementation details.
 
@@ -20,6 +21,7 @@ description: Maintain `codex_m` as the machine-local Windows manager for officia
 - official API key profiles
 - applying one saved official identity to the official Codex lane
 - making Desktop `codex.exe` follow the `codex_m`-managed official identity
+- preserving the shared substrate used by official and third-party lanes while keeping auth/provider ownership isolated
 
 `codex_m` is not a third-party provider manager. Third-party API key flows belong to `codex3_m`.
 
@@ -33,8 +35,9 @@ description: Maintain `codex_m` as the machine-local Windows manager for officia
 - On Windows, the plain `codex` CLI should be wrapped to use `~/.codex-official`, so Desktop `codex.exe` follow-mode and CLI follow-mode stay separate.
 - On current Windows builds, that wrapper must also force the official provider/auth overrides for plain CLI launches; `CODEX_HOME` pinning alone is not a strong enough guarantee.
 - Switching the official identity updates auth carriers and managed config keys; it does not mean swapping the whole Codex home.
-- Shared session/history/thread metadata should stay aligned as much as safely possible.
-- Auth carriers and managed config keys stay separate from shared session/history state.
+- Shared session/history/thread metadata, MCP/MCP OAuth/project config, skills, memories, rules, and vendor imports should stay aligned as much as safely possible.
+- Auth carriers and managed provider config keys stay separate from shared state.
+- On Windows, shared state is centralized in `%USERPROFILE%\.codex-shared` and linked into official homes.
 - SQLite thread/sidebar databases must not be live-shared across homes; sync or backfill is acceptable.
 
 ## Workflow
@@ -80,6 +83,8 @@ description: Maintain `codex_m` as the machine-local Windows manager for officia
 - Do not delete shared sessions/history/trust/skills during normal logout, repair, or switching.
 - Do not describe `codex.exe` follow-mode as launcher replacement or whole-home replacement.
 - Do not overwrite unrelated config keys; patch only the managed top-level keys.
+- Do not let `model_provider = "api111"` or `[model_providers.api111]` leak into the official lane.
+- Do not let official identity switching remove shared MCP servers, project config, skills, memories, rules, vendor imports, or session discovery.
 - Do not claim Desktop-only follow-mode on Windows unless the managed plain `codex` launcher is pinned to `~/.codex-official`.
 - Do not present the current Windows directory layout as a cross-platform contract.
 - If upstream Codex behavior changes, update the platform adapter and validation logic before changing the public contract.

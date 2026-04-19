@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
-const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
+  collectSharedTomlSectionHeaders,
+  extractTopLevelValues,
   filesMatch,
+  hasTomlSection,
   jsonFilesMatch,
   launcherDir,
   officialCliHome,
@@ -13,7 +15,9 @@ const {
   readJson,
   readPlainCodexModeState,
   readText,
+  sharedSubstrateHome: resolveSharedSubstrateHome,
   userHome,
+  validateSharedSubstrateLinks,
 } = require("../../_internal-codex-windows-core/scripts/validator-common.cjs");
 
 const DEFAULT_PROVIDER = {
@@ -28,32 +32,7 @@ const DEFAULT_PROVIDER = {
   model_context_window: 1000000,
   model_auto_compact_token_limit: 900000,
 };
-
-function safeRealPath(filePath) {
-  try {
-    return typeof fs.realpathSync.native === "function"
-      ? fs.realpathSync.native(filePath)
-      : fs.realpathSync(filePath);
-  } catch {
-    return null;
-  }
-}
-
-function pathResolvesTo(filePath, targetPath) {
-  const left = safeRealPath(filePath);
-  const right = safeRealPath(targetPath);
-  return Boolean(left && right && path.resolve(left) === path.resolve(right));
-}
-
-function filesShareIdentity(leftPath, rightPath) {
-  try {
-    const left = fs.statSync(leftPath);
-    const right = fs.statSync(rightPath);
-    return left.dev === right.dev && left.ino === right.ino;
-  } catch {
-    return false;
-  }
-}
+const sharedSubstrateHome = resolveSharedSubstrateHome();
 
 function detectAuthKind(authData) {
   if (
@@ -185,6 +164,24 @@ function validateThirdPartyConfig(configText, provider, issues) {
   if (provider.review_model && !configText.includes(`review_model = "${provider.review_model}"`)) {
     issues.push(`Third-party config is missing expected setting: review_model = "${provider.review_model}"`);
   }
+
+  const modelProviderValues = extractTopLevelValues(configText, "model_provider");
+  if (modelProviderValues.length !== 1) {
+    issues.push(`Third-party config should have exactly one top-level model_provider entry, found ${modelProviderValues.length}.`);
+  }
+  for (const value of modelProviderValues) {
+    if (value !== '"api111"') {
+      issues.push(`Third-party config model_provider must remain "api111", found ${value}.`);
+    }
+  }
+  if (hasTomlSection(configText, "model_providers.openai")) {
+    issues.push("Third-party config contains [model_providers.openai], which leaks official provider config into codex3.");
+  }
+  for (const sharedHeader of collectSharedTomlSectionHeaders(sharedSubstrateHome)) {
+    if (!hasTomlSection(configText, sharedHeader)) {
+      issues.push(`Third-party config is missing shared config section: [${sharedHeader}]`);
+    }
+  }
 }
 
 const jsonMode = process.argv.includes("--json");
@@ -278,33 +275,21 @@ if (path.resolve(provider.third_party_home) === path.resolve(provider.shared_cod
   issues.push("third_party_home matches shared_codex_home, so third-party auth would leak into shared state.");
 }
 
-for (const relativePath of ["sessions", "archived_sessions"]) {
-  const targetPath = path.join(provider.shared_codex_home, relativePath);
-  const linkPath = path.join(provider.third_party_home, relativePath);
-  if (!pathExists(targetPath)) {
-    warnings.push(`Shared session target does not exist yet: ${targetPath}`);
-    continue;
-  }
-  if (!pathExists(linkPath)) {
-    issues.push(`Shared session path is missing from third-party home: ${linkPath}`);
-    continue;
-  }
-  if (!pathResolvesTo(linkPath, targetPath)) {
-    issues.push(`Shared session path does not resolve to the shared Codex home: ${linkPath} -> ${targetPath}`);
-  }
-}
-
-const sessionIndexTargetPath = path.join(provider.shared_codex_home, "session_index.jsonl");
-const sessionIndexLinkPath = path.join(provider.third_party_home, "session_index.jsonl");
-if (!pathExists(sessionIndexTargetPath)) {
-  warnings.push(`Shared session index target does not exist yet: ${sessionIndexTargetPath}`);
-} else if (!pathExists(sessionIndexLinkPath)) {
-  issues.push(`Shared session index is missing from third-party home: ${sessionIndexLinkPath}`);
-} else if (!filesShareIdentity(sessionIndexLinkPath, sessionIndexTargetPath)) {
-  issues.push(
-    `Shared session index is not hard-linked to the shared Codex home: ${sessionIndexLinkPath} -> ${sessionIndexTargetPath}`,
-  );
-}
+validateSharedSubstrateLinks(provider.third_party_home, "Third-party home", sharedSubstrateHome, issues, warnings);
+const sharedCodexHomeReport = { issues: [], warnings: [] };
+validateSharedSubstrateLinks(
+  provider.shared_codex_home,
+  "Shared Codex home",
+  sharedSubstrateHome,
+  sharedCodexHomeReport.issues,
+  sharedCodexHomeReport.warnings,
+);
+warnings.push(
+  ...sharedCodexHomeReport.issues.map(
+    (issue) => `${issue} (pending Desktop/shared-home relink; close active Codex/Desktop processes and rerun install if Desktop must use the shared substrate immediately)`,
+  ),
+  ...sharedCodexHomeReport.warnings,
+);
 
 if (state?.profiles && typeof state.profiles === "object") {
   for (const [profileId, rawProfile] of Object.entries(state.profiles)) {
@@ -383,6 +368,7 @@ const payload = {
     desktopHome,
     thirdPartyHome: provider.third_party_home,
     sharedCodexHome: provider.shared_codex_home,
+    sharedSubstrateHome,
   },
   plainCodexMode,
 };

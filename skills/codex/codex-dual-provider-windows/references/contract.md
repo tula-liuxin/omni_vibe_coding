@@ -38,12 +38,21 @@
 - Only the explicit `codex.exe to use` bridge may copy the active third-party auth/config into the Desktop lane.
 - Do not use the Desktop bridge when the plain `codex` launcher is unmanaged or still reading `~/.codex`.
 - Do not treat `CODEX_HOME` pinning alone as enough to prove the bridge is safe; verify the managed official launcher behavior too.
+- Third-party generated config owns the `api111` provider shape; it must preserve unmanaged shared MCP/project sections but strip official provider sections.
+- `model_provider = "openai"` and `[model_providers.openai]` must not survive in the `codex3` config.
 
 ## Sharing Rules
 
-- Default shared targets are:
+- Default shared substrate: `%USERPROFILE%\.codex-shared`.
+- Default shared targets linked into both the shared Codex home and third-party home are:
   - `sessions`
   - `archived_sessions`
+  - `skills`
+  - `memories`
+  - `rules`
+  - `vendor_imports`
   - `session_index.jsonl`
+- Shared MCP server, MCP OAuth top-level settings, and project config fragments live under `.codex-shared\config` and are merged into generated lane configs.
+- The goal is switching-cost agnosticism: changing a `codex3_m` API key profile should not require reconfiguring MCP, project trust/config, skills, memories, rules, or session discovery.
 - Do not live-share SQLite sidebar/thread databases.
 - If the thread list needs to align across lanes, use sync/backfill instead of SQLite live-sharing.

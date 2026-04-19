@@ -13,7 +13,6 @@ import {
   pathExists,
   readJson,
   readText,
-  safeRealPath,
   writeJson,
   writeText,
 } from "./_shared/common.mjs";
@@ -53,6 +52,15 @@ import {
   syncSharedThreadMetadata as syncSharedThreadMetadataCore,
   toUnixTimestampSeconds as toUnixTimestampSecondsCore,
 } from "./_shared/thread-sync.mjs";
+import {
+  defaultSharedSubstrateHome,
+  ensureHomeUsesSharedSubstrate,
+  mergeCodexConfig,
+  readSharedConfigTexts,
+  seedSharedConfigFromHomes,
+  seedSharedSubstrateFromHome,
+  validateSharedSubstrateLinks,
+} from "./_shared/shared-substrate.mjs";
 
 installPromptCloseGuards();
 
@@ -98,8 +106,8 @@ const LAUNCHER_DIR = resolveLauncherDir();
 
 const DEFAULT_THIRD_PARTY_HOME = path.join(os.homedir(), ".codex-apikey");
 const DEFAULT_SHARED_CODEX_HOME = path.join(os.homedir(), ".codex");
-const SHARED_SESSION_RELATIVE_PATHS = ["sessions", "archived_sessions"];
 const SHARED_SESSION_INDEX_FILE = "session_index.jsonl";
+const SHARED_SUBSTRATE_HOME = defaultSharedSubstrateHome();
 const OFFICIAL_HOME = path.join(os.homedir(), ".codex");
 const OFFICIAL_CLI_HOME = path.join(os.homedir(), ".codex-official");
 const DEFAULT_PROVIDER = {
@@ -592,25 +600,11 @@ function sharedSessionIndexLinkPath(provider) {
   return path.join(provider.third_party_home, SHARED_SESSION_INDEX_FILE);
 }
 
-function sharedSessionIndexTargetPath(provider) {
-  return path.join(provider.shared_codex_home, SHARED_SESSION_INDEX_FILE);
-}
-
-function sharedSessionLinkPath(provider, relativePath) {
-  return path.join(provider.third_party_home, relativePath);
-}
-
-function sharedSessionTargetPath(provider, relativePath) {
-  return path.join(provider.shared_codex_home, relativePath);
-}
-
-function pathResolvesTo(filePath, targetPath) {
-  const left = safeRealPath(filePath);
-  const right = safeRealPath(targetPath);
-  if (!left || !right) {
-    return false;
-  }
-  return path.resolve(left) === path.resolve(right);
+function ensureThirdPartySharedSubstrate(provider) {
+  seedSharedSubstrateFromHome(provider.shared_codex_home, SHARED_SUBSTRATE_HOME);
+  seedSharedSubstrateFromHome(provider.third_party_home, SHARED_SUBSTRATE_HOME);
+  ensureHomeUsesSharedSubstrate(provider.shared_codex_home, SHARED_SUBSTRATE_HOME);
+  ensureHomeUsesSharedSubstrate(provider.third_party_home, SHARED_SUBSTRATE_HOME);
 }
 
 function filesShareIdentity(filePath, targetPath) {
@@ -861,11 +855,38 @@ function writeThirdPartyConfig(provider) {
   }
 
   lines.push("");
-  const text = lines.join("\n");
+  const generatedText = lines.join("\n");
+  const configPath = thirdPartyConfigPath(provider);
+  const existingText = pathExists(configPath) ? readText(configPath) : "";
+  seedSharedConfigFromHomes(
+    [provider.shared_codex_home, provider.third_party_home, OFFICIAL_HOME, OFFICIAL_CLI_HOME],
+    SHARED_SUBSTRATE_HOME,
+  );
+  const text = mergeCodexConfig({
+    existingText,
+    generatedText,
+    sharedTexts: readSharedConfigTexts(SHARED_SUBSTRATE_HOME),
+    managedTopLevelKeys: [
+      "model_provider",
+      "openai_base_url",
+      "model",
+      "review_model",
+      "model_reasoning_effort",
+      "cli_auth_credentials_store",
+      "disable_response_storage",
+      "preferred_auth_method",
+      "service_tier",
+      "model_verbosity",
+      "plan_mode_reasoning_effort",
+      "model_context_window",
+      "model_auto_compact_token_limit",
+    ],
+    managedSectionHeaders: [`model_providers.${provider.provider_name}`, "model_providers.openai"],
+  });
 
   ensureDir(provider.third_party_home);
-  backupFileIfExists(thirdPartyConfigPath(provider), "codex3-config.toml.bak");
-  writeText(thirdPartyConfigPath(provider), text);
+  backupFileIfExists(configPath, "codex3-config.toml.bak");
+  writeText(configPath, text);
 }
 
 function assertPlainCodexLauncherUsesOfficialCliHome() {
@@ -1025,7 +1046,7 @@ async function activateProfile(state, profileId, { silent = false, skipProcessCh
     assertNoRunningCodexProcesses();
   }
 
-  ensureDir(provider.third_party_home);
+  ensureThirdPartySharedSubstrate(provider);
   backupFileIfExists(thirdPartyAuthPath(provider), "codex3-auth.json.bak");
   fs.copyFileSync(source, thirdPartyAuthPath(provider));
   writeThirdPartyConfig(provider);
@@ -1184,23 +1205,17 @@ function doctorReport(state) {
     warnings.push(`Shared Codex home does not exist yet: ${provider.shared_codex_home}`);
   }
 
-  for (const relativePath of SHARED_SESSION_RELATIVE_PATHS) {
-    const targetPath = sharedSessionTargetPath(provider, relativePath);
-    const linkPath = sharedSessionLinkPath(provider, relativePath);
-    if (!fs.existsSync(targetPath)) {
-      warnings.push(`Shared session target does not exist yet: ${targetPath}`);
-      continue;
-    }
-    if (!fs.existsSync(linkPath)) {
-      issues.push(`Shared session path is missing from third-party home: ${linkPath}`);
-      continue;
-    }
-    if (!pathResolvesTo(linkPath, targetPath)) {
-      issues.push(
-        `Shared session path does not resolve to the shared Codex home: ${linkPath} -> ${targetPath}`,
-      );
-    }
-  }
+  const thirdPartySubstrateReport = validateSharedSubstrateLinks(provider.third_party_home, SHARED_SUBSTRATE_HOME);
+  issues.push(...thirdPartySubstrateReport.issues);
+  warnings.push(...thirdPartySubstrateReport.warnings);
+
+  const sharedHomeSubstrateReport = validateSharedSubstrateLinks(provider.shared_codex_home, SHARED_SUBSTRATE_HOME);
+  warnings.push(
+    ...sharedHomeSubstrateReport.issues.map(
+      (issue) => `${issue} (pending Desktop/shared-home relink; close active Codex/Desktop processes and rerun install if you need Desktop to use the shared substrate immediately)`,
+    ),
+    ...sharedHomeSubstrateReport.warnings,
+  );
 
   for (const profile of getProfiles(state)) {
     const authPath = profileAuthPath(profile.profile_id);
@@ -1711,6 +1726,7 @@ function getTuningSourceLabel(state, key) {
 async function applyResolvedProviderState(state) {
   const provider = resolveProviderFromState(state);
   saveState(state);
+  ensureThirdPartySharedSubstrate(provider);
   writeThirdPartyConfig(provider);
   runWrapperInstaller(provider);
   if (state.active_profile_id) {
@@ -2572,7 +2588,11 @@ async function handleSyncThreads(state, args) {
     }
   }
 
-  const sessionIndexTargetPath = sharedSessionIndexTargetPath(provider);
+  const substrateReport = validateSharedSubstrateLinks(provider.third_party_home, SHARED_SUBSTRATE_HOME);
+  issues.push(...substrateReport.issues);
+  warnings.push(...substrateReport.warnings);
+
+  const sessionIndexTargetPath = path.join(SHARED_SUBSTRATE_HOME, SHARED_SESSION_INDEX_FILE);
   const sessionIndexLinkPath = sharedSessionIndexLinkPath(provider);
   if (!fs.existsSync(sessionIndexTargetPath)) {
     warnings.push(`Shared session index target does not exist yet: ${sessionIndexTargetPath}`);

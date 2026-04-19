@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 
-const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const {
+  collectSharedTomlSectionHeaders,
+  extractTopLevelValues,
   filesMatch,
+  hasTomlSection,
   jsonFilesMatch,
   pathExists,
   readJson,
   readPlainCodexModeState,
   readText,
+  sharedSubstrateHome: resolveSharedSubstrateHome,
+  validateSharedSubstrateLinks,
 } = require("../../_internal-codex-windows-core/scripts/validator-common.cjs");
 
 const PROFILE_KIND_CHATGPT = "chatgpt";
@@ -94,6 +98,23 @@ function extractTopLevelValue(text, key) {
   }
 
   return null;
+}
+
+function validateOfficialConfigIsolation(configText, label, sharedSubstrateHome, issues) {
+  const modelProviderValues = extractTopLevelValues(configText, "model_provider");
+  for (const value of modelProviderValues) {
+    if (value === '"api111"') {
+      issues.push(`${label} config contains third-party model_provider = "api111".`);
+    }
+  }
+  if (hasTomlSection(configText, "model_providers.api111")) {
+    issues.push(`${label} config contains [model_providers.api111], which leaks codex3 provider config into the official lane.`);
+  }
+  for (const sharedHeader of collectSharedTomlSectionHeaders(sharedSubstrateHome)) {
+    if (!hasTomlSection(configText, sharedHeader)) {
+      issues.push(`${label} config is missing shared config section: [${sharedHeader}]`);
+    }
+  }
 }
 
 function normalizeAccountEmail(email) {
@@ -247,6 +268,7 @@ const managerHome = resolveManagerHome();
 const officialHome = resolveOfficialHome();
 const officialCliHome = resolveOfficialCliHome();
 const effectiveCodexHome = resolveEffectiveCodexHome();
+const sharedSubstrateHome = resolveSharedSubstrateHome();
 const plainCodexModeState = readPlainCodexModeState(managerHome);
 const plainCodexMode = plainCodexModeState?.mode || "official";
 const launcherDir =
@@ -262,6 +284,22 @@ if (path.resolve(effectiveCodexHome) !== path.resolve(officialHome)) {
     `Current process CODEX_HOME points to ${effectiveCodexHome}, but codex_m validates the official home at ${officialHome}.`,
   );
 }
+
+validateSharedSubstrateLinks(officialCliHome, "Official CLI home", sharedSubstrateHome, issues, warnings);
+const officialDesktopSubstrateReport = { issues: [], warnings: [] };
+validateSharedSubstrateLinks(
+  officialHome,
+  "Official Desktop home",
+  sharedSubstrateHome,
+  officialDesktopSubstrateReport.issues,
+  officialDesktopSubstrateReport.warnings,
+);
+warnings.push(
+  ...officialDesktopSubstrateReport.issues.map(
+    (issue) => `${issue} (pending Desktop/shared-home relink; close active Codex/Desktop processes and rerun install if Desktop must use the shared substrate immediately)`,
+  ),
+  ...officialDesktopSubstrateReport.warnings,
+);
 
 const runtimeFiles = [
   path.join(managerHome, "index.mjs"),
@@ -484,6 +522,7 @@ const officialCliConfigPath = path.join(officialCliHome, "config.toml");
 let forcedValue = null;
 if (pathExists(configPath)) {
   const configText = readText(configPath);
+  validateOfficialConfigIsolation(configText, "Official Desktop", sharedSubstrateHome, issues);
   for (const key of ["cli_auth_credentials_store", "forced_chatgpt_workspace_id"]) {
     const inspection = inspectManagedKey(configText, key);
     if (inspection.topLevelLines.length > 1) {
@@ -514,6 +553,7 @@ if (pathExists(configPath)) {
 let officialCliForcedValue = null;
 if (pathExists(officialCliConfigPath)) {
   const configText = readText(officialCliConfigPath);
+  validateOfficialConfigIsolation(configText, "Official CLI", sharedSubstrateHome, issues);
   for (const key of ["cli_auth_credentials_store", "forced_chatgpt_workspace_id"]) {
     const inspection = inspectManagedKey(configText, key);
     if (inspection.topLevelLines.length > 1) {
@@ -676,7 +716,9 @@ if (plainCodexMode !== PLAIN_CODEX_MODE_THIRD_PARTY) {
   } else if (!pathExists(officialCliConfigPath)) {
     issues.push(`Official CLI config is missing while codex.exe should follow the official lane: ${officialCliConfigPath}`);
   } else if (!filesMatch(configPath, officialCliConfigPath)) {
-    issues.push("Desktop config.toml does not match ~/.codex-official/config.toml.");
+    warnings.push(
+      "Desktop config.toml differs from ~/.codex-official/config.toml in unmanaged settings; managed official auth/provider isolation checks still apply.",
+    );
   }
 }
 
@@ -689,6 +731,7 @@ const payload = {
     officialHome,
     officialCliHome,
     launcherDir,
+    sharedSubstrateHome,
   },
   plainCodexMode,
 };

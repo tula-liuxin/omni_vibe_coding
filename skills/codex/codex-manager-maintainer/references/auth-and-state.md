@@ -19,6 +19,8 @@
 
 - Managed keys must stay at the TOML top level.
 - Preserve unrelated config content.
+- Preserve unmanaged MCP server and project config sections through the shared substrate.
+- Strip third-party provider ownership from official configs; `api111` provider tables and top-level `model_provider = "api111"` are contamination, not shared config.
 - When a ChatGPT snapshot is active, the managed workspace restriction must match that login identity.
 - When an official API key profile is active, the managed workspace restriction must be removed.
 - If Desktop is intentionally following the third-party lane, validators may relax official Desktop drift checks until `codex_m` restores the official follow-mode.
@@ -27,7 +29,7 @@
 
 - Logout removes the selected saved ChatGPT snapshot only.
 - Deleting an official API key profile removes only that saved API key profile.
-- Shared sessions/history/config should remain intact.
+- Shared sessions/history/config, MCP/project config, skills, memories, rules, and vendor imports should remain intact.
 
 ## Duplicate Handling
 

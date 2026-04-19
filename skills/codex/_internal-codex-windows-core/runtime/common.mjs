@@ -54,10 +54,15 @@ export function safeRealPath(filePath) {
 
 export function moveAsidePath(filePath) {
   if (!pathExists(filePath)) {
-    return;
+    return true;
   }
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  fs.renameSync(filePath, `${filePath}.pre-shared-${timestamp}`);
+  try {
+    fs.renameSync(filePath, `${filePath}.pre-shared-${timestamp}`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function ensureDirectoryJunction(linkPath, targetPath) {
@@ -65,10 +70,13 @@ export function ensureDirectoryJunction(linkPath, targetPath) {
   const linkRealPath = safeRealPath(linkPath);
   const targetRealPath = safeRealPath(targetPath);
   if (linkRealPath && targetRealPath && path.resolve(linkRealPath) === path.resolve(targetRealPath)) {
-    return;
+    return true;
   }
-  moveAsidePath(linkPath);
+  if (!moveAsidePath(linkPath)) {
+    return false;
+  }
   fs.symlinkSync(targetPath, linkPath, "junction");
+  return true;
 }
 
 export function ensureFileHardLink(linkPath, targetPath) {
@@ -76,11 +84,18 @@ export function ensureFileHardLink(linkPath, targetPath) {
   if (!pathExists(targetPath)) {
     fs.writeFileSync(targetPath, "", "utf8");
   }
-  const linkRealPath = safeRealPath(linkPath);
-  const targetRealPath = safeRealPath(targetPath);
-  if (linkRealPath && targetRealPath && path.resolve(linkRealPath) === path.resolve(targetRealPath)) {
-    return;
+  try {
+    const linkStat = fs.statSync(linkPath);
+    const targetStat = fs.statSync(targetPath);
+    if (linkStat.dev === targetStat.dev && linkStat.ino === targetStat.ino) {
+      return true;
+    }
+  } catch {
+    // Fall through and recreate the link.
   }
-  moveAsidePath(linkPath);
+  if (!moveAsidePath(linkPath)) {
+    return false;
+  }
   fs.linkSync(targetPath, linkPath);
+  return true;
 }

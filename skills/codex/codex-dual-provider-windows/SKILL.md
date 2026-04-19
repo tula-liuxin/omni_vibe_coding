@@ -10,7 +10,7 @@ description: Maintain the Windows split setup where official Codex stays officia
 - Keep the official lane understandable and unchanged.
 - Keep third-party auth/config isolated from the official lane.
 - Treat `codex3_m` as the manager for third-party API key profiles.
-- Keep session/history sharing as broad as safely possible without mixing auth carriers.
+- Keep session/history, MCP/project config, skills, memories, rules, and vendor imports stable across official/third-party switching without mixing auth carriers.
 - The default third-party lane is `codex3` + `codex3_m`, using the `api111` API-key configuration shape.
 
 ## Stable Responsibilities
@@ -22,6 +22,7 @@ description: Maintain the Windows split setup where official Codex stays officia
 - making Desktop `codex.exe` follow the third-party lane when requested
 - maintaining the split Windows adapter where official and third-party auth/config remain separated
 - keeping the generated third-party config aligned with the current `api111` tutorial shape
+- preserving shared MCP servers, project trust/config, skills, memories, rules, and session discovery when accounts or API keys are switched
 
 ## Public Contract
 
@@ -32,11 +33,18 @@ description: Maintain the Windows split setup where official Codex stays officia
 - On Windows, that Desktop-only contract assumes the managed plain `codex` launcher is pinned to `~/.codex-official`.
 - On current Windows builds, that managed launcher must also force the official provider/auth overrides for plain CLI launches; `CODEX_HOME` pinning alone is not a strong enough guarantee.
 - `Config` is the small settings surface for command/path/model details on the fixed `api111` lane.
-- Third-party auth/config remain isolated from the official lane.
-- Default shared state is limited to:
+- Third-party auth and provider-owned config remain isolated from the official lane.
+- Unmanaged MCP server config, project config/trust, skills, memories, rules, vendor imports, and session/history discovery should be stable across `codex_m`/`codex3_m` switching.
+- Default shared substrate is `%USERPROFILE%\.codex-shared`.
+- Default shared state includes:
   - `sessions`
   - `archived_sessions`
+  - `skills`
+  - `memories`
+  - `rules`
+  - `vendor_imports`
   - `session_index.jsonl`
+- Shared MCP server, MCP OAuth, and project config fragments are stored under `.codex-shared\config` and merged into generated lane configs.
 - SQLite sidebar/thread databases must not be live-shared.
 - If sidebar/thread views need alignment, use synchronization or backfill instead of direct SQLite sharing.
 
@@ -79,7 +87,8 @@ description: Maintain the Windows split setup where official Codex stays officia
 - Do not let `codex3_m` rewrite official manager state except for the explicit `codex.exe to use` bridge.
 - Do not describe `codex.exe to use` as launcher replacement, plain `codex` CLI switching, or whole-home replacement.
 - Do not allow `codex.exe to use` to run on Windows if the managed plain `codex` launcher is not pinned to `~/.codex-official`.
-- Do not expand third-party default sharing beyond `sessions`, `archived_sessions`, and `session_index.jsonl` unless the task explicitly requires it and safety is clear.
+- Do not share auth carriers, provider tables, or managed top-level provider keys through the shared substrate.
+- Do not let `[model_providers.openai]` or `model_provider = "openai"` leak into the `codex3` config.
 - Do not live-share SQLite `state_5.sqlite*` files between official and third-party homes.
 - Do not re-introduce multi-mode provider compatibility (`compat`, `stable-http`) into the public contract.
 - Do not expose protocol fields such as `model_provider`, provider table names, `wire_api`, or auth-carrier settings as everyday controls.

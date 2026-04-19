@@ -54,6 +54,16 @@ import {
   syncSharedThreadMetadata as syncSharedThreadMetadataCore,
   toUnixTimestampSeconds as toUnixTimestampSecondsCore,
 } from "./_shared/thread-sync.mjs";
+import {
+  SHARED_DIRECTORIES,
+  SHARED_FILES,
+  defaultSharedSubstrateHome,
+  ensureHomeUsesSharedSubstrate,
+  mergeCodexConfig,
+  readSharedConfigTexts,
+  seedSharedConfigFromHomes,
+  seedSharedSubstrateFromHome,
+} from "./_shared/shared-substrate.mjs";
 
 installPromptCloseGuards();
 
@@ -77,35 +87,45 @@ const OFFICIAL_CLI_HOME = path.join(os.homedir(), ".codex-official");
 const OFFICIAL_CLI_AUTH_PATH = path.join(OFFICIAL_CLI_HOME, "auth.json");
 const OFFICIAL_CLI_CONFIG_PATH = path.join(OFFICIAL_CLI_HOME, "config.toml");
 const THIRD_PARTY_MANAGER_STATE_PATH = path.join(os.homedir(), ".codex3-manager", "state.json");
-const OFFICIAL_CLI_SHARED_DIRECTORIES = [
-  "sessions",
-  "archived_sessions",
-  "skills",
-  "memories",
-  "rules",
-  "vendor_imports",
-];
-const OFFICIAL_CLI_SHARED_FILES = ["session_index.jsonl"];
+const OFFICIAL_CLI_SHARED_DIRECTORIES = SHARED_DIRECTORIES;
+const OFFICIAL_CLI_SHARED_FILES = SHARED_FILES;
+const SHARED_SUBSTRATE_HOME = defaultSharedSubstrateHome();
 
 const MANAGED_CONFIG_KEYS = {
   cli_auth_credentials_store: '"file"',
 };
+const OFFICIAL_LANE_STRIPPED_TOP_LEVEL_KEYS = [
+  "model_provider",
+  "openai_base_url",
+  "preferred_auth_method",
+  "disable_response_storage",
+  "model_context_window",
+  "model_auto_compact_token_limit",
+];
+const OFFICIAL_LANE_STRIPPED_SECTION_HEADERS = ["model_providers.api111"];
+const OFFICIAL_MANAGED_TOP_LEVEL_KEYS = Object.keys(MANAGED_CONFIG_KEYS)
+  .concat(["forced_chatgpt_workspace_id"])
+  .concat(OFFICIAL_LANE_STRIPPED_TOP_LEVEL_KEYS);
 
 const PROFILE_KIND_CHATGPT = "chatgpt";
 const PROFILE_KIND_OFFICIAL_API_KEY = "official_api_key";
 
 function ensureOfficialCliHomeLayout() {
+  seedSharedSubstrateFromHome(OFFICIAL_HOME, SHARED_SUBSTRATE_HOME);
+  seedSharedSubstrateFromHome(OFFICIAL_CLI_HOME, SHARED_SUBSTRATE_HOME);
+  ensureHomeUsesSharedSubstrate(OFFICIAL_HOME, SHARED_SUBSTRATE_HOME);
+  ensureHomeUsesSharedSubstrate(OFFICIAL_CLI_HOME, SHARED_SUBSTRATE_HOME);
   ensureDir(OFFICIAL_CLI_HOME);
   for (const relativePath of OFFICIAL_CLI_SHARED_DIRECTORIES) {
     ensureDirectoryJunction(
       path.join(OFFICIAL_CLI_HOME, relativePath),
-      path.join(OFFICIAL_HOME, relativePath),
+      path.join(SHARED_SUBSTRATE_HOME, relativePath),
     );
   }
   for (const relativePath of OFFICIAL_CLI_SHARED_FILES) {
     ensureFileHardLink(
       path.join(OFFICIAL_CLI_HOME, relativePath),
-      path.join(OFFICIAL_HOME, relativePath),
+      path.join(SHARED_SUBSTRATE_HOME, relativePath),
     );
   }
 }
@@ -1196,6 +1216,35 @@ function stripManagedTomlEntries(text, keys) {
   return kept.join("\n");
 }
 
+function stripTomlSectionsByHeader(text, headers) {
+  const headerSet = new Set(headers);
+  const lines = String(text || "").split(/\r?\n/);
+  const kept = [];
+  let skip = false;
+
+  for (const line of lines) {
+    const match = line.match(/^\s*\[\s*([^\]]+)\s*\]\s*$/);
+    if (match) {
+      skip = headerSet.has(match[1].trim());
+    }
+    if (!skip) {
+      kept.push(line);
+    }
+  }
+
+  while (kept.length && kept[kept.length - 1] === "") {
+    kept.pop();
+  }
+  return kept.join("\n");
+}
+
+function stripOfficialLaneContamination(text) {
+  return stripTomlSectionsByHeader(
+    stripManagedTomlEntries(text, OFFICIAL_LANE_STRIPPED_TOP_LEVEL_KEYS),
+    OFFICIAL_LANE_STRIPPED_SECTION_HEADERS,
+  );
+}
+
 function writeManagedTopLevelTomlKeys(text, entries) {
   const keys = Object.keys(entries);
   const cleanedText = stripManagedTomlEntries(text, keys);
@@ -1264,23 +1313,36 @@ function getCurrentWorkspaceRestriction(text) {
   return match ? match[1] : null;
 }
 
+function mergeOfficialConfigText(seedText, managedEntries) {
+  seedSharedConfigFromHomes(
+    [OFFICIAL_HOME, OFFICIAL_CLI_HOME, getThirdPartyHomeFromState()],
+    SHARED_SUBSTRATE_HOME,
+  );
+  return mergeCodexConfig({
+    generatedText: writeManagedTopLevelTomlKeys(
+      stripOfficialLaneContamination(seedText),
+      managedEntries,
+    ),
+    sharedTexts: readSharedConfigTexts(SHARED_SUBSTRATE_HOME),
+    managedTopLevelKeys: OFFICIAL_MANAGED_TOP_LEVEL_KEYS,
+    managedSectionHeaders: OFFICIAL_LANE_STRIPPED_SECTION_HEADERS,
+  });
+}
+
 function applyManagedConfigToHome(configPath, workspaceId) {
   ensureDir(path.dirname(configPath));
   backupFileIfExists(configPath, path.basename(configPath) + ".bak");
 
-  const text = writeManagedTopLevelTomlKeys(
-    readConfigText(configPath),
-    {
-      ...MANAGED_CONFIG_KEYS,
-      forced_chatgpt_workspace_id: JSON.stringify(workspaceId),
-    },
-  );
+  const text = mergeOfficialConfigText(readConfigText(configPath), {
+    ...MANAGED_CONFIG_KEYS,
+    forced_chatgpt_workspace_id: JSON.stringify(workspaceId),
+  });
   writeText(configPath, text);
 }
 
 function removeManagedWorkspaceRestrictionFromHome(configPath) {
   ensureDir(path.dirname(configPath));
-  const updated = writeManagedTopLevelTomlKeys(readConfigText(configPath), MANAGED_CONFIG_KEYS);
+  const updated = mergeOfficialConfigText(readConfigText(configPath), MANAGED_CONFIG_KEYS);
   writeText(configPath, updated);
 }
 
@@ -1292,7 +1354,7 @@ function applyManagedConfigToOfficialCliHome(workspaceId) {
   ensureOfficialCliHomeLayout();
   ensureDir(path.dirname(OFFICIAL_CLI_CONFIG_PATH));
   backupFileIfExists(OFFICIAL_CLI_CONFIG_PATH, path.basename(OFFICIAL_CLI_CONFIG_PATH) + ".bak");
-  const text = writeManagedTopLevelTomlKeys(readOfficialCliConfigSeedText(), {
+  const text = mergeOfficialConfigText(readOfficialCliConfigSeedText(), {
     ...MANAGED_CONFIG_KEYS,
     forced_chatgpt_workspace_id: JSON.stringify(workspaceId),
   });
@@ -1306,7 +1368,7 @@ function removeManagedWorkspaceRestriction() {
 function removeManagedWorkspaceRestrictionFromOfficialCliHome() {
   ensureOfficialCliHomeLayout();
   ensureDir(path.dirname(OFFICIAL_CLI_CONFIG_PATH));
-  const updated = writeManagedTopLevelTomlKeys(readOfficialCliConfigSeedText(), MANAGED_CONFIG_KEYS);
+  const updated = mergeOfficialConfigText(readOfficialCliConfigSeedText(), MANAGED_CONFIG_KEYS);
   writeText(OFFICIAL_CLI_CONFIG_PATH, updated);
 }
 

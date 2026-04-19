@@ -24,8 +24,9 @@
 
 ## Sharing Model
 
-- Share safe session/history/thread metadata as much as practical.
-- Keep auth carriers and managed config keys distinct from shared session/history state.
+- Share safe session/history/thread metadata, MCP/project config, skills, memories, rules, and vendor imports as much as practical.
+- Keep auth carriers and managed provider config keys distinct from shared state.
+- Switching an official identity should not force the user to reconfigure MCP servers, project trust/config, skills, memories, rules, or session discovery.
 - Do not model switching as whole-home replacement.
 - Do not live-share SQLite sidebar/thread databases between homes.
 - If thread/sidebar views need alignment, use synchronization or backfill instead of direct SQLite sharing.
@@ -34,4 +35,5 @@
 
 - Prefer migration or repair over destructive reinstall.
 - Keep the official/third-party boundary understandable.
+- Strip third-party provider ownership from official configs; `api111` belongs to `codex3_m`, not `codex_m`.
 - Keep the public contract stable even when platform adapters change.
